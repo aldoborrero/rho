@@ -1,0 +1,11 @@
+pub mod ai;
+pub mod cli;
+pub mod commands;
+pub mod compaction;
+pub mod config;
+pub mod modes;
+pub mod prompts;
+pub mod session;
+pub mod tools;
+pub mod tui;
+pub mod utils;

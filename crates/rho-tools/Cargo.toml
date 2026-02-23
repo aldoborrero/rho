@@ -1,0 +1,60 @@
+[package]
+name = "rho-tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Search
+grep-regex = "0.1"
+grep-searcher = "0.1"
+grep-matcher = "0.1"
+globset = "0.4"
+ignore = "0.4"
+rayon = "1.10"
+dashmap = "6.1"
+smallvec = { version = "1.15", features = ["write", "union"] }
+
+# Image
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+
+# Clipboard
+arboard = { version = "3.5.0", features = ["wayland-data-control"] }
+
+# HTML
+html-to-markdown-rs = { version = "2.24", default-features = false }
+
+# Shell
+brush-core = { version = "0.4.0", path = "../brush-core-vendored" }
+brush-builtins = { version = "0.1.0", path = "../brush-builtins-vendored" }
+os_pipe = "1"
+portable-pty = "0.9"
+clap = { version = "4", features = ["derive"] }
+
+# Process management
+sysinfo = "0.38"
+
+# Profiling
+inferno = { version = "0.12", default-features = false }
+parking_lot = "0.12"
+
+# Workmux
+workmux = { git = "https://github.com/aldoborrero/workmux", branch = "feat/library-extraction", default-features = false }
+
+# Async
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["full"] }
+
+# Error handling
+thiserror = "2"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"

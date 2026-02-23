@@ -1,0 +1,17 @@
+# Rust
+/target/
+
+# Nix / direnv
+/.direnv/
+result
+result-*
+
+# Environment overrides
+.envrc.local
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~

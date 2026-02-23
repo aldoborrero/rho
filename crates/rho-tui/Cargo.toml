@@ -1,0 +1,41 @@
+[package]
+name = "rho-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+rho-text = { path = "../rho-text" }
+crossterm = "0.29"
+base64 = "0.22"
+dirs = "6"
+ignore = "0.4"
+phf = { version = "0.13", features = ["macros"] }
+pulldown-cmark = "0.12"
+syntect = { version = "5.3", default-features = false, features = [
+  "default-syntaxes",
+  "default-themes",
+  "regex-fancy",
+] }
+unicode-segmentation = "1.11"
+
+[dev-dependencies]
+criterion.workspace = true
+tempfile = "3"
+
+[[bench]]
+name = "keys"
+harness = false
+
+[[bench]]
+name = "stdin_buffer"
+harness = false
+
+[[bench]]
+name = "markdown"
+harness = false

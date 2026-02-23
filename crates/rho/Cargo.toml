@@ -1,0 +1,38 @@
+[package]
+name = "rho"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "rho"
+path = "src/main.rs"
+
+[dependencies]
+rho-ai = { path = "../rho-ai" }
+rho-agent = { path = "../rho-agent" }
+rho-text = { path = "../rho-text" }
+rho-tui = { path = "../rho-tui" }
+rho-tools = { path = "../rho-tools" }
+
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "6"
+anyhow = "1"
+chrono = "0.4"
+async-trait = "0.1"
+crossterm = "0.29"
+sha2 = "0.10"
+rand = "0.9"
+base64 = "0.22"
+minijinja = { version = "2", features = ["builtins"] }
+
+[dev-dependencies]
+tempfile = "3"
+filetime = "0.2"
+
+[lints]
+workspace = true

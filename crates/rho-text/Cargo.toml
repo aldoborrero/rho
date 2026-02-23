@@ -1,0 +1,23 @@
+[package]
+name = "rho-text"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "ANSI-aware text measurement, slicing, wrapping, and sanitization"
+
+[lints]
+workspace = true
+
+[dependencies]
+unicode-segmentation = "1.11"
+unicode-width = "0.2"
+smallvec = "1.15"
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "text"
+harness = false
