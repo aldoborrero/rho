@@ -202,8 +202,12 @@ fn build_right_column(
 	lines.push(theme.bold("Tips"));
 
 	// Tip entries: accent key + muted description
-	let tips: [(&str, &str); 3] =
-		[("?", " for keyboard shortcuts"), ("/", " for commands"), ("!", " to run bash")];
+	let tips: [(&str, &str); 4] = [
+		("?", " for keyboard shortcuts"),
+		("/", " for commands"),
+		("!", " to run bash"),
+		("!!", " to run bash and send output to LLM"),
+	];
 	for (key, desc) in &tips {
 		let styled =
 			format!("{}{}", theme.fg(ThemeColor::Accent, key), theme.fg(ThemeColor::Muted, desc),);

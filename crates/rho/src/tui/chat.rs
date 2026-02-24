@@ -5,14 +5,20 @@ use std::{collections::HashMap, rc::Rc};
 
 use rho_tui::{
 	component::{Component, InputResult},
-	components::markdown::Markdown,
+	components::{
+		loader::Loader,
+		markdown::Markdown,
+		output_block::{OutputBlockOptions, OutputBlockState, OutputSection, render_output_block},
+	},
 	symbols::SymbolTheme,
 	theme::{Theme, ThemeBg, ThemeColor},
 };
 
 use crate::{
 	ai::types::{AssistantMessage, ContentBlock, Message, ToolResultMessage, UserMessage},
-	tui::tool_renderers::{ToolResultDisplay, get_tool_renderer},
+	tui::tool_renderers::{
+		ToolResultDisplay, collapse_lines, get_tool_renderer, make_bg_style, make_border_style,
+	},
 };
 
 /// Cached rendered output for a single tool result.
@@ -22,9 +28,22 @@ struct CachedRender {
 	lines:    Vec<String>,
 }
 
+/// A bang command result (not a Message — purely for display).
+struct BangOutput {
+	command:  String,
+	output:   String,
+	is_error: bool,
+}
+
+/// Items in the chat display (messages or bang command outputs).
+enum ChatItem {
+	Message(Message),
+	Bang(BangOutput),
+}
+
 /// Renders the conversation history as styled ANSI lines.
 pub struct ChatComponent {
-	messages:           Vec<Message>,
+	items:              Vec<ChatItem>,
 	/// Currently streaming text (appended to display but not yet committed).
 	streaming_text:     String,
 	/// Currently streaming thinking text.
@@ -41,12 +60,30 @@ pub struct ChatComponent {
 	tools_expanded:     bool,
 	/// Side-table cache for rendered tool results, keyed by `tool_use_id`.
 	render_cache:       HashMap<String, CachedRender>,
+	/// Animated spinner for loading states.
+	loader:             Loader,
+	/// Currently executing tool name (for spinner message).
+	tool_executing:     Option<String>,
+	/// Currently streaming bang output (in-progress command).
+	streaming_bang:     Option<BangOutput>,
 }
 
 impl ChatComponent {
 	pub fn new(theme: Rc<Theme>, symbols: SymbolTheme) -> Self {
+		let mut loader = Loader::new(
+			Box::new({
+				let theme = theme.clone();
+				move |s: &str| theme.fg(ThemeColor::Accent, s)
+			}),
+			Box::new({
+				let theme = theme.clone();
+				move |s: &str| theme.fg(ThemeColor::Dim, s)
+			}),
+			"Thinking...",
+		);
+		loader.stop(); // Don't run until streaming starts.
 		Self {
-			messages: Vec::new(),
+			items: Vec::new(),
 			streaming_text: String::new(),
 			streaming_thinking: String::new(),
 			is_streaming: false,
@@ -55,17 +92,58 @@ impl ChatComponent {
 			symbols,
 			tools_expanded: false,
 			render_cache: HashMap::new(),
+			loader,
+			tool_executing: None,
+			streaming_bang: None,
 		}
 	}
 
 	pub fn add_message(&mut self, message: Message) {
-		self.messages.push(message);
+		self.items.push(ChatItem::Message(message));
+	}
+
+	/// Add a completed bang command output to the chat display.
+	pub fn add_bang_output(&mut self, command: &str, output: &str, is_error: bool) {
+		self.items.push(ChatItem::Bang(BangOutput {
+			command: command.to_owned(),
+			output: output.to_owned(),
+			is_error,
+		}));
+	}
+
+	/// Start a streaming bang command output block.
+	pub fn start_bang(&mut self, command: &str) {
+		self.streaming_bang = Some(BangOutput {
+			command:  command.to_owned(),
+			output:   String::new(),
+			is_error: false,
+		});
+		self.loader.set_message(&format!("$ {command}"));
+		self.loader.start();
+	}
+
+	/// Append a chunk of output to the in-progress bang command.
+	pub fn append_bang_output(&mut self, chunk: &str) {
+		if let Some(ref mut bang) = self.streaming_bang {
+			bang.output.push_str(chunk);
+		}
+	}
+
+	/// Finish the streaming bang command and commit it to the display.
+	pub fn finish_bang(&mut self, is_error: bool) {
+		if let Some(mut bang) = self.streaming_bang.take() {
+			bang.is_error = is_error;
+			self.items.push(ChatItem::Bang(bang));
+			self.loader.stop();
+		}
 	}
 
 	pub fn start_streaming(&mut self) {
 		self.is_streaming = true;
 		self.streaming_text.clear();
 		self.streaming_thinking.clear();
+		self.loader.set_message("Thinking...");
+		self.loader.start();
 	}
 
 	pub fn append_text(&mut self, text: &str) {
@@ -80,14 +158,20 @@ impl ChatComponent {
 		self.is_streaming = false;
 		self.streaming_text.clear();
 		self.streaming_thinking.clear();
+		self.loader.stop();
+		self.tool_executing = None;
 	}
 
 	pub fn clear(&mut self) {
-		self.messages.clear();
+		self.items.clear();
 		self.streaming_text.clear();
 		self.streaming_thinking.clear();
+		self.is_streaming = false;
 		self.scroll_offset = 0;
 		self.render_cache.clear();
+		self.loader.stop();
+		self.tool_executing = None;
+		self.streaming_bang = None;
 	}
 
 	/// Toggle expanded/collapsed state for all tool output blocks (Ctrl+O).
@@ -96,21 +180,48 @@ impl ChatComponent {
 		self.render_cache.clear();
 	}
 
-	/// Look up the tool name for a given `tool_use_id` by scanning assistant
-	/// messages.
-	fn find_tool_name(&self, tool_use_id: &str) -> Option<&str> {
-		for msg in self.messages.iter().rev() {
-			if let Message::Assistant(a) = msg {
+	/// Advance spinner animation. Returns true if re-render needed.
+	pub fn tick(&mut self) -> bool {
+		self.loader.tick()
+	}
+
+	/// Set the currently executing tool (shows spinner with tool name).
+	pub fn set_tool_executing(&mut self, name: Option<String>) {
+		match name {
+			Some(ref n) => {
+				self.loader.set_message(&format!("Running {n}..."));
+				self.loader.start();
+			},
+			None => {
+				// Reset to "Thinking..." for the next LLM turn.
+				self.loader.set_message("Thinking...");
+			},
+		}
+		self.tool_executing = name;
+	}
+
+	/// Look up the tool name and input args for a given `tool_use_id` by
+	/// scanning assistant messages.
+	fn find_tool_use_data(&self, tool_use_id: &str) -> Option<(&str, &serde_json::Value)> {
+		for item in self.items.iter().rev() {
+			if let ChatItem::Message(Message::Assistant(a)) = item {
 				for block in &a.content {
-					if let ContentBlock::ToolUse { id, name, .. } = block
+					if let ContentBlock::ToolUse { id, name, input } = block
 						&& id == tool_use_id
 					{
-						return Some(name.as_str());
+						return Some((name.as_str(), input));
 					}
 				}
 			}
 		}
 		None
+	}
+
+	/// Check whether a `ToolResult` message exists for the given `tool_use_id`.
+	fn has_tool_result(&self, tool_use_id: &str) -> bool {
+		self.items.iter().any(|item| {
+			matches!(item, ChatItem::Message(Message::ToolResult(t)) if t.tool_use_id == tool_use_id)
+		})
 	}
 
 	fn render_user_message(&self, msg: &UserMessage, width: u16) -> Vec<String> {
@@ -162,9 +273,14 @@ impl ChatComponent {
 						lines.push(format!("  {styled}"));
 					}
 				},
-				ContentBlock::ToolUse { name, input, .. } => {
-					let renderer = get_tool_renderer(name);
-					lines.extend(renderer.render_call(input, &self.theme, width));
+				ContentBlock::ToolUse { id, name, input } => {
+					// Skip rendering the call block if a matching result already
+					// exists — the combined block will be rendered from the result
+					// side instead.
+					if !self.has_tool_result(id) {
+						let renderer = get_tool_renderer(name);
+						lines.extend(renderer.render_call(input, &self.theme, width));
+					}
 				},
 			}
 		}
@@ -180,19 +296,106 @@ impl ChatComponent {
 			return cached.lines.clone();
 		}
 
-		// Cache miss — render fresh
-		let tool_name = self.find_tool_name(&msg.tool_use_id).unwrap_or("Unknown");
-		let renderer = get_tool_renderer(tool_name);
+		// Cache miss — render fresh.
+		// Look up both name and args so we can render a combined block.
+		let (tool_name, args) = self.find_tool_use_data(&msg.tool_use_id).map_or_else(
+			|| ("Unknown".to_owned(), serde_json::Value::Null),
+			|(n, a)| (n.to_owned(), a.clone()),
+		);
+		let renderer = get_tool_renderer(&tool_name);
 		let display = ToolResultDisplay { content: msg.content.clone(), is_error: msg.is_error };
-		let lines = renderer.render_result(&display, self.tools_expanded, &self.theme, width);
+		let lines =
+			renderer.render_combined(&args, &display, self.tools_expanded, &self.theme, width);
 
 		// Store in cache
-		self.render_cache.insert(msg.tool_use_id.clone(), CachedRender {
-			expanded: self.tools_expanded,
-			width,
-			lines: lines.clone(),
-		});
+		self
+			.render_cache
+			.insert(msg.tool_use_id.clone(), CachedRender {
+				expanded: self.tools_expanded,
+				width,
+				lines: lines.clone(),
+			});
 
+		lines
+	}
+
+	fn render_bang_output(&self, bang: &BangOutput, width: u16) -> Vec<String> {
+		let state = if bang.is_error {
+			OutputBlockState::Error
+		} else {
+			OutputBlockState::Success
+		};
+		let icon = if bang.is_error {
+			"\u{2718}"
+		} else {
+			"\u{2714}"
+		};
+		let header_text = self
+			.theme
+			.fg(ThemeColor::ToolTitle, &self.theme.bold(&format!("{icon} Bash")));
+		let header_width = rho_text::width::visible_width_str(&header_text);
+
+		let max_lines = if self.tools_expanded { 50 } else { 20 };
+		let content_lines: Vec<&str> = bang.output.lines().collect();
+		let collapsed = collapse_lines(&content_lines, max_lines, &self.theme);
+
+		let opts = OutputBlockOptions {
+			header: header_text,
+			header_width,
+			state,
+			sections: vec![
+				OutputSection {
+					label: Some(self.theme.dim("Command")),
+					lines: vec![format!("$ {}", bang.command)],
+				},
+				OutputSection {
+					label: Some(self.theme.dim("Output")),
+					lines: collapsed,
+				},
+			],
+			border_style: make_border_style(&self.theme, state),
+			bg_style: make_bg_style(&self.theme, state),
+		};
+		let mut lines = Vec::new();
+		lines.push(String::new()); // blank separator
+		lines.extend(render_output_block(&opts, width));
+		lines
+	}
+
+	fn render_bang_running(&mut self, bang: &BangOutput, width: u16) -> Vec<String> {
+		let state = OutputBlockState::Running;
+		let header_text = self
+			.theme
+			.fg(ThemeColor::ToolTitle, &self.theme.bold("\u{2b22} Bash"));
+		let header_width = rho_text::width::visible_width_str(&header_text);
+
+		let mut sections = vec![OutputSection {
+			label: Some(self.theme.dim("Command")),
+			lines: vec![format!("$ {}", bang.command)],
+		}];
+		if !bang.output.is_empty() {
+			let max_lines = if self.tools_expanded { 50 } else { 20 };
+			let content_lines: Vec<&str> = bang.output.lines().collect();
+			let collapsed = collapse_lines(&content_lines, max_lines, &self.theme);
+			sections.push(OutputSection {
+				label: Some(self.theme.dim("Output")),
+				lines: collapsed,
+			});
+		}
+
+		let opts = OutputBlockOptions {
+			header: header_text,
+			header_width,
+			state,
+			sections,
+			border_style: make_border_style(&self.theme, state),
+			bg_style: make_bg_style(&self.theme, state),
+		};
+		let mut lines = Vec::new();
+		lines.push(String::new()); // blank separator
+		lines.extend(render_output_block(&opts, width));
+		// Show spinner below the block
+		lines.extend(self.loader.render(width));
 		lines
 	}
 }
@@ -201,30 +404,74 @@ impl Component for ChatComponent {
 	fn render(&mut self, width: u16) -> Vec<String> {
 		let mut lines = Vec::new();
 
-		// Clone messages to avoid borrow conflict with &mut self in render_tool_result.
-		let messages: Vec<Message> = self.messages.clone();
-		for msg in &messages {
-			match msg {
-				Message::User(u) => lines.extend(self.render_user_message(u, width)),
-				Message::Assistant(a) => lines.extend(self.render_assistant_message(a, width)),
-				Message::ToolResult(t) => lines.extend(self.render_tool_result(t, width)),
+		// Clone items to avoid borrow conflict with &mut self in render_tool_result.
+		// We need to iterate over items but render_tool_result needs &mut self for
+		// cache.
+		let item_count = self.items.len();
+		for i in 0..item_count {
+			match &self.items[i] {
+				ChatItem::Message(Message::User(u)) => {
+					let u = u.clone();
+					lines.extend(self.render_user_message(&u, width));
+				},
+				ChatItem::Message(Message::Assistant(a)) => {
+					let a = a.clone();
+					lines.extend(self.render_assistant_message(&a, width));
+				},
+				ChatItem::Message(Message::ToolResult(t)) => {
+					let t = t.clone();
+					lines.extend(self.render_tool_result(&t, width));
+				},
+				ChatItem::Bang(bang) => {
+					// BangOutput doesn't need &mut self, just render directly.
+					// But we need to avoid the borrow conflict, so clone.
+					let bang_lines = self.render_bang_output(
+						&BangOutput {
+							command:  bang.command.clone(),
+							output:   bang.output.clone(),
+							is_error: bang.is_error,
+						},
+						width,
+					);
+					lines.extend(bang_lines);
+				},
 			}
+		}
+
+		// Render in-progress bang output block
+		if let Some(ref bang) = self.streaming_bang {
+			let bang_clone = BangOutput {
+				command:  bang.command.clone(),
+				output:   bang.output.clone(),
+				is_error: bang.is_error,
+			};
+			lines.extend(self.render_bang_running(&bang_clone, width));
 		}
 
 		// Render streaming content
 		if self.is_streaming {
-			if !self.streaming_thinking.is_empty() {
-				let label = self
-					.theme
-					.fg(ThemeColor::ThinkingText, &self.theme.italic("[thinking...]"));
-				lines.push(format!("  {label}"));
-			}
-			if !self.streaming_text.is_empty() {
-				lines.push(String::new());
-				let md_theme = self.theme.markdown_theme(self.symbols.clone());
-				let mut md = Markdown::new(&self.streaming_text, 1, 0, md_theme, None, 2);
-				let rendered = md.render(width);
-				lines.extend(rendered);
+			let has_content = !self.streaming_text.is_empty() || !self.streaming_thinking.is_empty();
+			if !has_content && self.tool_executing.is_none() {
+				// No content yet — show spinner
+				lines.extend(self.loader.render(width));
+			} else {
+				if !self.streaming_thinking.is_empty() {
+					let label = self
+						.theme
+						.fg(ThemeColor::ThinkingText, &self.theme.italic("[thinking...]"));
+					lines.push(format!("  {label}"));
+				}
+				if !self.streaming_text.is_empty() {
+					lines.push(String::new());
+					let md_theme = self.theme.markdown_theme(self.symbols.clone());
+					let mut md = Markdown::new(&self.streaming_text, 1, 0, md_theme, None, 2);
+					let rendered = md.render(width);
+					lines.extend(rendered);
+				}
+				// Show tool execution spinner after streaming text
+				if self.tool_executing.is_some() {
+					lines.extend(self.loader.render(width));
+				}
 			}
 		}
 
@@ -476,5 +723,180 @@ mod tests {
 		// Toggle clears cache
 		chat.toggle_tool_expansion();
 		assert!(chat.render_cache.is_empty());
+	}
+
+	#[test]
+	fn test_bang_output_renders() {
+		let mut chat = ChatComponent::new(test_theme(), test_symbols());
+		chat.add_bang_output("ls -la", "total 42\ndrwxr-xr-x", false);
+		let lines = chat.render(80);
+		assert!(lines.iter().any(|l| l.contains("Bash")), "bang output should show Bash title");
+		assert!(
+			lines.iter().any(|l| l.contains("$ ls -la")),
+			"bang output should show command in section",
+		);
+		assert!(
+			lines.iter().any(|l| l.contains("\u{2714}")),
+			"successful bang output should show check mark",
+		);
+	}
+
+	#[test]
+	fn test_bang_output_error_renders() {
+		let mut chat = ChatComponent::new(test_theme(), test_symbols());
+		chat.add_bang_output("false", "command failed", true);
+		let lines = chat.render(80);
+		assert!(lines.iter().any(|l| l.contains("Bash")), "error bang output should show Bash title");
+		assert!(
+			lines.iter().any(|l| l.contains("$ false")),
+			"error bang output should show command in section",
+		);
+		assert!(
+			lines.iter().any(|l| l.contains("\u{2718}")),
+			"error bang output should show cross mark",
+		);
+	}
+
+	#[test]
+	fn test_streaming_bang_renders() {
+		let mut chat = ChatComponent::new(test_theme(), test_symbols());
+		chat.start_bang("sleep 3");
+		let lines = chat.render(80);
+		assert!(
+			lines.iter().any(|l| l.contains("sleep 3")),
+			"streaming bang should show the command",
+		);
+		chat.append_bang_output("chunk1\n");
+		chat.append_bang_output("chunk2\n");
+		let lines = chat.render(80);
+		assert!(
+			lines.iter().any(|l| l.contains("chunk1")),
+			"streaming bang should show accumulated output",
+		);
+		chat.finish_bang(false);
+		let lines = chat.render(80);
+		assert!(lines.iter().any(|l| l.contains("\u{2714}")), "finished bang should show check mark",);
+	}
+
+	#[test]
+	fn test_spinner_shows_when_streaming_no_content() {
+		let mut chat = ChatComponent::new(test_theme(), test_symbols());
+		chat.start_streaming();
+		let lines = chat.render(80);
+		assert!(
+			lines.iter().any(|l| l.contains("Thinking...")),
+			"spinner should show 'Thinking...' when streaming with no content",
+		);
+		chat.finish_streaming();
+	}
+
+	// ── Combined rendering ─────────────────────────────────────────
+
+	#[test]
+	fn test_tool_use_suppressed_when_result_exists() {
+		let mut chat = ChatComponent::new(test_theme(), test_symbols());
+		add_tool_use(&mut chat, "tu_1", "Bash", serde_json::json!({ "command": "ls" }));
+		chat.add_message(Message::ToolResult(ToolResultMessage {
+			tool_use_id: "tu_1".to_owned(),
+			content:     "file.txt".to_owned(),
+			is_error:    false,
+		}));
+		let lines = chat.render(80);
+		// The running-state header (⬢) should NOT appear
+		let running_blocks = lines.iter().filter(|l| l.contains('\u{2b22}')).count();
+		assert_eq!(
+			running_blocks, 0,
+			"ToolUse running block should be suppressed when result exists",
+		);
+		// The combined result block (✔) should appear
+		assert!(
+			lines.iter().any(|l| l.contains('\u{2714}')),
+			"combined result block should appear with check mark",
+		);
+	}
+
+	#[test]
+	fn test_tool_use_shown_when_running() {
+		let mut chat = ChatComponent::new(test_theme(), test_symbols());
+		// Only ToolUse, no ToolResult yet — should show running block
+		add_tool_use(&mut chat, "tu_1", "Bash", serde_json::json!({ "command": "sleep 5" }));
+		let lines = chat.render(80);
+		assert!(
+			lines.iter().any(|l| l.contains('\u{2b22}')),
+			"ToolUse should render running block when no result exists",
+		);
+	}
+
+	#[test]
+	fn test_combined_block_shows_command_and_output() {
+		let mut chat = ChatComponent::new(test_theme(), test_symbols());
+		add_tool_use(&mut chat, "tu_1", "Bash", serde_json::json!({ "command": "echo hello" }));
+		chat.add_message(Message::ToolResult(ToolResultMessage {
+			tool_use_id: "tu_1".to_owned(),
+			content:     "hello".to_owned(),
+			is_error:    false,
+		}));
+		let lines = chat.render(80);
+		assert!(
+			lines.iter().any(|l| l.contains("$ echo hello")),
+			"combined block should include the command",
+		);
+		assert!(
+			lines.iter().any(|l| l.contains("hello")),
+			"combined block should include the output",
+		);
+	}
+
+	#[test]
+	fn test_parallel_tools_one_running_one_done() {
+		let mut chat = ChatComponent::new(test_theme(), test_symbols());
+		// Assistant message with two tool uses
+		chat.add_message(Message::Assistant(AssistantMessage {
+			content:     vec![
+				ContentBlock::ToolUse {
+					id:    "tu_a".to_owned(),
+					name:  "Bash".to_owned(),
+					input: serde_json::json!({ "command": "ls" }),
+				},
+				ContentBlock::ToolUse {
+					id:    "tu_b".to_owned(),
+					name:  "Grep".to_owned(),
+					input: serde_json::json!({ "pattern": "TODO" }),
+				},
+			],
+			stop_reason: None,
+			usage:       None,
+		}));
+		// Only first tool has a result
+		chat.add_message(Message::ToolResult(ToolResultMessage {
+			tool_use_id: "tu_a".to_owned(),
+			content:     "file.txt".to_owned(),
+			is_error:    false,
+		}));
+		let lines = chat.render(80);
+		// tu_a: suppressed ToolUse, combined result shown
+		assert!(
+			lines.iter().any(|l| l.contains('\u{2714}')),
+			"completed tool should show combined result with check mark",
+		);
+		// tu_b: still running, should show running block
+		assert!(
+			lines.iter().any(|l| l.contains('\u{2b22}')),
+			"running tool should still show running block",
+		);
+	}
+
+	#[test]
+	fn test_has_tool_result() {
+		let mut chat = ChatComponent::new(test_theme(), test_symbols());
+		add_tool_use(&mut chat, "tu_1", "Bash", serde_json::json!({}));
+		assert!(!chat.has_tool_result("tu_1"), "no result yet");
+		chat.add_message(Message::ToolResult(ToolResultMessage {
+			tool_use_id: "tu_1".to_owned(),
+			content:     "ok".to_owned(),
+			is_error:    false,
+		}));
+		assert!(chat.has_tool_result("tu_1"), "result exists");
+		assert!(!chat.has_tool_result("tu_2"), "different id has no result");
 	}
 }

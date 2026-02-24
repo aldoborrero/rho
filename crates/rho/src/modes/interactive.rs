@@ -24,6 +24,12 @@ pub enum AppEvent {
 	Terminal(rho_tui::TerminalEvent),
 	/// Agent event from the autonomous agent loop.
 	Agent(AgentEvent),
+	/// Periodic tick for spinner animation.
+	Tick,
+	/// A chunk of output from a bang command.
+	BangChunk(String),
+	/// Bang command completed.
+	BangDone { is_error: bool },
 }
 
 /// Parse a thinking level string into a `ThinkingLevel`.
@@ -161,8 +167,10 @@ async fn apply_command_result(
 						result.tokens_before,
 						result.details,
 					)?;
-					let msg =
-						result.short_summary.as_deref().unwrap_or("Conversation compacted.");
+					let msg = result
+						.short_summary
+						.as_deref()
+						.unwrap_or("Conversation compacted.");
 					show_chat_message(app, &format!("Compacted: {msg}"));
 				},
 				Err(e) => show_chat_message(app, &format!("Compaction failed: {e}")),
@@ -279,6 +287,8 @@ pub async fn run_interactive(
 
 	// Track application mode.
 	let mut mode = AppMode::Idle;
+	// Cancellation handle for the currently running bang command.
+	let mut bang_cancel: Option<tokio::sync::oneshot::Sender<()>> = None;
 
 	// If an initial message was provided on the command line, send it immediately.
 	if let Some(initial_text) = cli.initial_message() {
@@ -295,9 +305,24 @@ pub async fn run_interactive(
 	app.tui.request_render();
 	app.render_to_tui(&mut terminal)?;
 
+	// Tick interval for spinner animation.
+	let mut tick_interval = tokio::time::interval(std::time::Duration::from_millis(80));
+	tick_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
 	// Main event loop.
 	loop {
-		match rx.recv().await {
+		let event = tokio::select! {
+			event = rx.recv() => event,
+			_ = tick_interval.tick() => Some(AppEvent::Tick),
+		};
+		match event {
+			Some(AppEvent::Tick) => {
+				if app.chat.tick() {
+					app.tui.request_render();
+					app.render_to_tui(&mut terminal)?;
+				}
+				continue;
+			},
 			Some(AppEvent::Terminal(event)) => match event {
 				rho_tui::TerminalEvent::Input(ref data) => {
 					// Ctrl+C
@@ -308,6 +333,13 @@ pub async fn run_interactive(
 							// since mode is now Idle.
 							mode = AppMode::Idle;
 							app.chat.finish_streaming();
+						} else if matches!(mode, AppMode::BangRunning) {
+							// Cancel the running bang command and kill the process.
+							if let Some(cancel) = bang_cancel.take() {
+								let _ = cancel.send(());
+							}
+							app.chat.finish_bang(true);
+							mode = AppMode::Idle;
 						} else {
 							break;
 						}
@@ -328,7 +360,13 @@ pub async fn run_interactive(
 					// listeners then to the editor).
 					else {
 						let result = app.handle_input(data);
+						app.sync_editor_border_color();
 						if let InputResult::Submit(text) = result {
+							// Block submissions while a bang command is running.
+							if matches!(mode, AppMode::BangRunning) {
+								continue;
+							}
+
 							// Handle submission inline.
 							app.editor.add_to_history(&text);
 
@@ -363,15 +401,51 @@ pub async fn run_interactive(
 									show_chat_message(
 										&mut app,
 										&format!(
-											"Unknown command: {cmd}. Type /help for available \
-											 commands."
+											"Unknown command: {cmd}. Type /help for available commands."
 										),
 									);
 								},
 								InputAction::BangCommand(cmd) => {
-									let output =
-										crate::commands::execute_bang(cmd, &tools).await?;
-									show_chat_message(&mut app, &output);
+									// Show the user's command in chat.
+									app.chat.add_message(Message::User(UserMessage {
+										content: format!("!{cmd}"),
+									}));
+
+									// Start a streaming bang output block.
+									app.chat.start_bang(cmd);
+									mode = AppMode::BangRunning;
+
+									// Spawn background execution with cancellation support.
+									let chunk_tx = tx.clone();
+									let done_tx = tx.clone();
+									let bang_tools = tools.clone();
+									let cmd_owned = cmd.to_owned();
+									let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
+									bang_cancel = Some(cancel_tx);
+									tokio::spawn(async move {
+										let shell_fut = crate::commands::execute_bang_streaming(
+											&cmd_owned,
+											&bang_tools,
+											move |chunk| {
+												// try_send avoids blocking a tokio worker thread
+												// if the channel is full; chunks are dropped.
+												let _ = chunk_tx.try_send(AppEvent::BangChunk(chunk));
+											},
+										);
+										let result = tokio::select! {
+											r = shell_fut => r,
+											_ = cancel_rx => {
+												// Cancelled by Ctrl+C — future is dropped,
+												// which cleans up the shell process.
+												Ok(rho_agent::tools::ToolOutput {
+													content: String::new(),
+													is_error: true,
+												})
+											}
+										};
+										let is_error = result.map_or(true, |o| o.is_error);
+										let _ = done_tx.send(AppEvent::BangDone { is_error }).await;
+									});
 								},
 								InputAction::UserMessage(text) => {
 									// If already streaming, interrupt the current agent run
@@ -380,8 +454,7 @@ pub async fn run_interactive(
 										app.chat.finish_streaming();
 									}
 
-									let user_msg =
-										Message::User(UserMessage { content: text.to_owned() });
+									let user_msg = Message::User(UserMessage { content: text.to_owned() });
 									app.chat.add_message(user_msg.clone());
 									session.append(user_msg).await?;
 
@@ -423,8 +496,14 @@ pub async fn run_interactive(
 							app.chat.append_thinking(&text);
 						}
 					},
-					AgentEvent::ToolCallStart { .. } => {},
-					AgentEvent::ToolCallResult { .. } => {},
+					AgentEvent::ToolCallStart { name, .. } => {
+						if matches!(mode, AppMode::Streaming) {
+							app.chat.set_tool_executing(Some(name));
+						}
+					},
+					AgentEvent::ToolCallResult { .. } => {
+						app.chat.set_tool_executing(None);
+					},
 					AgentEvent::MessageComplete(message) => {
 						if let Some(ref usage) = message.usage {
 							app.status
@@ -436,11 +515,8 @@ pub async fn run_interactive(
 						app.chat.add_message(Message::Assistant(message));
 					},
 					AgentEvent::ToolResultComplete { tool_use_id, content, is_error } => {
-						let tool_msg = Message::ToolResult(ToolResultMessage {
-							tool_use_id,
-							content,
-							is_error,
-						});
+						let tool_msg =
+							Message::ToolResult(ToolResultMessage { tool_use_id, content, is_error });
 						app.chat.add_message(tool_msg.clone());
 						session.append(tool_msg).await?;
 						// Start streaming for next LLM turn.
@@ -468,19 +544,19 @@ pub async fn run_interactive(
 								+ usage.output_tokens
 								+ usage.cache_creation_input_tokens
 								+ usage.cache_read_input_tokens;
-							let settings =
-								crate::compaction::settings::CompactionSettings::default();
+							let settings = crate::compaction::settings::CompactionSettings::default();
 							if crate::compaction::settings::should_compact(
 								context_tokens,
 								model.context_window,
 								&settings,
 							) {
-								show_chat_message(
-									&mut app,
-									"Context nearing limit, compacting...",
-								);
+								show_chat_message(&mut app, "Context nearing limit, compacting...");
 								match crate::compaction::compact::run_compaction(
-									&session, &model, &config.api_key, &settings, None,
+									&session,
+									&model,
+									&config.api_key,
+									&settings,
+									None,
 								)
 								.await
 								{
@@ -496,16 +572,10 @@ pub async fn run_interactive(
 											.short_summary
 											.as_deref()
 											.unwrap_or("Conversation compacted.");
-										show_chat_message(
-											&mut app,
-											&format!("Auto-compacted: {msg}"),
-										);
+										show_chat_message(&mut app, &format!("Auto-compacted: {msg}"));
 									},
 									Err(e) => {
-										show_chat_message(
-											&mut app,
-											&format!("Auto-compaction failed: {e}"),
-										);
+										show_chat_message(&mut app, &format!("Auto-compaction failed: {e}"));
 									},
 								}
 							}
@@ -524,6 +594,17 @@ pub async fn run_interactive(
 							_ => {},
 						}
 					},
+				}
+			},
+			Some(AppEvent::BangChunk(chunk)) => {
+				if matches!(mode, AppMode::BangRunning) {
+					app.chat.append_bang_output(&chunk);
+				}
+			},
+			Some(AppEvent::BangDone { is_error }) => {
+				if matches!(mode, AppMode::BangRunning) {
+					app.chat.finish_bang(is_error);
+					mode = AppMode::Idle;
 				}
 			},
 			None => break, // Channel closed.

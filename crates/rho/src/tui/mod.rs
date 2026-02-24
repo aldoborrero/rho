@@ -178,6 +178,21 @@ impl App {
 		self.editor.set_top_border(Some(border));
 	}
 
+	/// Update the editor border color based on the current input prefix.
+	///
+	/// Uses `BashMode` (blue) when the text starts with `!`, otherwise
+	/// falls back to the default `BorderMuted`.
+	pub fn sync_editor_border_color(&mut self) {
+		let text = self.editor.get_text();
+		let trimmed = text.trim_start();
+		let color = if trimmed.starts_with('!') {
+			ThemeColor::BashMode
+		} else {
+			ThemeColor::BorderMuted
+		};
+		self.editor.border_color = self.theme.border_color_fn(color);
+	}
+
 	/// Detect terminal capabilities from the environment.
 	fn detect_terminal_info() -> TerminalInfo {
 		get_terminal_info(detect_terminal_id())

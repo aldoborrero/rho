@@ -32,11 +32,27 @@ pub trait ToolRenderer {
 		theme: &Theme,
 		width: u16,
 	) -> Vec<String>;
+	/// Render a combined block merging call info + result into one bordered
+	/// block. Default delegates to `render_result`.
+	fn render_combined(
+		&self,
+		args: &Value,
+		result: &ToolResultDisplay,
+		expanded: bool,
+		theme: &Theme,
+		width: u16,
+	) -> Vec<String> {
+		let _ = args; // unused in default impl
+		self.render_result(result, expanded, theme, width)
+	}
 }
 
 // ── Style helpers ───────────────────────────────────────────────────────
 
-fn make_border_style(theme: &Theme, state: OutputBlockState) -> Box<dyn Fn(&str) -> String> {
+pub(crate) fn make_border_style(
+	theme: &Theme,
+	state: OutputBlockState,
+) -> Box<dyn Fn(&str) -> String> {
 	let color = match state {
 		OutputBlockState::Pending | OutputBlockState::Running => ThemeColor::Accent,
 		OutputBlockState::Success => ThemeColor::Dim,
@@ -46,7 +62,10 @@ fn make_border_style(theme: &Theme, state: OutputBlockState) -> Box<dyn Fn(&str)
 }
 
 #[allow(clippy::type_complexity, reason = "matches OutputBlockOptions::bg_style signature")]
-fn make_bg_style(theme: &Theme, state: OutputBlockState) -> Option<Box<dyn Fn(&str) -> String>> {
+pub(crate) fn make_bg_style(
+	theme: &Theme,
+	state: OutputBlockState,
+) -> Option<Box<dyn Fn(&str) -> String>> {
 	let bg = match state {
 		OutputBlockState::Pending | OutputBlockState::Running => ThemeBg::ToolPendingBg,
 		OutputBlockState::Success => ThemeBg::ToolSuccessBg,
@@ -62,7 +81,7 @@ fn make_bg_style(theme: &Theme, state: OutputBlockState) -> Option<Box<dyn Fn(&s
 
 /// Collapse lines to at most `max` visible lines, appending a dim
 /// `"... (N more lines)"` indicator when truncated.
-fn collapse_lines(lines: &[&str], max: usize, theme: &Theme) -> Vec<String> {
+pub(crate) fn collapse_lines(lines: &[&str], max: usize, theme: &Theme) -> Vec<String> {
 	if lines.len() <= max {
 		return lines.iter().map(|s| (*s).to_owned()).collect();
 	}
@@ -126,6 +145,60 @@ fn render_result_block(
 	render_output_block(&opts, width)
 }
 
+/// Render a combined call + result block. Takes pre-built sections for the call
+/// info, then appends a result section with collapsed content.
+#[allow(
+	clippy::too_many_arguments,
+	reason = "private helper consolidating combined render logic"
+)]
+fn render_combined_block(
+	tool_name: &str,
+	call_sections: Vec<OutputSection>,
+	result: &ToolResultDisplay,
+	result_label: Option<&str>,
+	collapsed_lines: usize,
+	expanded_lines: usize,
+	expanded: bool,
+	theme: &Theme,
+	width: u16,
+) -> Vec<String> {
+	let state = if result.is_error {
+		OutputBlockState::Error
+	} else {
+		OutputBlockState::Success
+	};
+	let icon = if result.is_error {
+		"\u{2718}"
+	} else {
+		"\u{2714}"
+	};
+	let header_text = theme.fg(ThemeColor::ToolTitle, &theme.bold(&format!("{icon} {tool_name}")));
+	let header_width = rho_text::width::visible_width_str(&header_text);
+	let max_lines = if expanded {
+		expanded_lines
+	} else {
+		collapsed_lines
+	};
+	let content_lines: Vec<&str> = result.content.lines().collect();
+	let collapsed = collapse_lines(&content_lines, max_lines, theme);
+
+	let mut sections = call_sections;
+	sections.push(OutputSection {
+		label: result_label.map(|l| theme.dim(l)),
+		lines: collapsed,
+	});
+
+	let opts = OutputBlockOptions {
+		header: header_text,
+		header_width,
+		state,
+		sections,
+		border_style: make_border_style(theme, state),
+		bg_style: make_bg_style(theme, state),
+	};
+	render_output_block(&opts, width)
+}
+
 // ── BashRenderer ────────────────────────────────────────────────────────
 
 pub struct BashRenderer;
@@ -133,11 +206,7 @@ pub struct BashRenderer;
 impl ToolRenderer for BashRenderer {
 	fn render_call(&self, args: &Value, theme: &Theme, width: u16) -> Vec<String> {
 		let command = arg_str(args, "command");
-		let header_text = format!(
-			"{} {}",
-			theme.fg(ThemeColor::ToolTitle, &theme.bold("\u{2b22} Bash")),
-			theme.fg(ThemeColor::Dim, &format!("$ {command}")),
-		);
+		let header_text = theme.fg(ThemeColor::ToolTitle, &theme.bold("\u{2b22} Bash"));
 		let header_width = rho_text::width::visible_width_str(&header_text);
 		let state = OutputBlockState::Running;
 		let opts = OutputBlockOptions {
@@ -161,7 +230,23 @@ impl ToolRenderer for BashRenderer {
 		theme: &Theme,
 		width: u16,
 	) -> Vec<String> {
-		render_result_block("Bash", result, Some("Output"), 3, 10, expanded, theme, width)
+		render_result_block("Bash", result, Some("Output"), 10, 30, expanded, theme, width)
+	}
+
+	fn render_combined(
+		&self,
+		args: &Value,
+		result: &ToolResultDisplay,
+		expanded: bool,
+		theme: &Theme,
+		width: u16,
+	) -> Vec<String> {
+		let command = arg_str(args, "command");
+		let call_sections = vec![OutputSection {
+			label: Some(theme.dim("Command")),
+			lines: vec![format!("$ {command}")],
+		}];
+		render_combined_block("Bash", call_sections, result, Some("Output"), 10, 30, expanded, theme, width)
 	}
 }
 
@@ -227,7 +312,23 @@ impl ToolRenderer for WriteRenderer {
 		theme: &Theme,
 		width: u16,
 	) -> Vec<String> {
-		render_result_block("Write", result, None, 3, 10, expanded, theme, width)
+		render_result_block("Write", result, None, 5, 20, expanded, theme, width)
+	}
+
+	fn render_combined(
+		&self,
+		args: &Value,
+		result: &ToolResultDisplay,
+		expanded: bool,
+		theme: &Theme,
+		width: u16,
+	) -> Vec<String> {
+		let file = arg_str(args, "file_path");
+		let call_sections = vec![OutputSection {
+			label: Some(theme.dim("File")),
+			lines: vec![file.to_owned()],
+		}];
+		render_combined_block("Write", call_sections, result, None, 5, 20, expanded, theme, width)
 	}
 }
 
@@ -275,7 +376,35 @@ impl ToolRenderer for EditRenderer {
 		theme: &Theme,
 		width: u16,
 	) -> Vec<String> {
-		render_result_block("Edit", result, None, 3, 10, expanded, theme, width)
+		render_result_block("Edit", result, None, 5, 20, expanded, theme, width)
+	}
+
+	fn render_combined(
+		&self,
+		args: &Value,
+		result: &ToolResultDisplay,
+		expanded: bool,
+		theme: &Theme,
+		width: u16,
+	) -> Vec<String> {
+		let file = arg_str(args, "file_path");
+		let mut call_sections = vec![OutputSection {
+			label: Some(theme.dim("File")),
+			lines: vec![file.to_owned()],
+		}];
+		let old_string = arg_str(args, "old_string");
+		let new_string = arg_str(args, "new_string");
+		if !old_string.is_empty() || !new_string.is_empty() {
+			let mut diff_lines = Vec::new();
+			for line in old_string.lines() {
+				diff_lines.push(theme.fg(ThemeColor::ToolDiffRemoved, &format!("- {line}")));
+			}
+			for line in new_string.lines() {
+				diff_lines.push(theme.fg(ThemeColor::ToolDiffAdded, &format!("+ {line}")));
+			}
+			call_sections.push(OutputSection { label: Some(theme.dim("Diff")), lines: diff_lines });
+		}
+		render_combined_block("Edit", call_sections, result, None, 5, 20, expanded, theme, width)
 	}
 }
 
@@ -308,7 +437,23 @@ impl ToolRenderer for GrepRenderer {
 		theme: &Theme,
 		width: u16,
 	) -> Vec<String> {
-		render_result_block("Grep", result, Some("Matches"), 3, 10, expanded, theme, width)
+		render_result_block("Grep", result, Some("Matches"), 5, 20, expanded, theme, width)
+	}
+
+	fn render_combined(
+		&self,
+		args: &Value,
+		result: &ToolResultDisplay,
+		expanded: bool,
+		theme: &Theme,
+		width: u16,
+	) -> Vec<String> {
+		let pattern = arg_str(args, "pattern");
+		let call_sections = vec![OutputSection {
+			label: Some(theme.dim("Pattern")),
+			lines: vec![pattern.to_owned()],
+		}];
+		render_combined_block("Grep", call_sections, result, Some("Matches"), 5, 20, expanded, theme, width)
 	}
 }
 
@@ -341,7 +486,23 @@ impl ToolRenderer for FindRenderer {
 		theme: &Theme,
 		width: u16,
 	) -> Vec<String> {
-		render_result_block("Find", result, Some("Files"), 3, 10, expanded, theme, width)
+		render_result_block("Find", result, Some("Files"), 5, 20, expanded, theme, width)
+	}
+
+	fn render_combined(
+		&self,
+		args: &Value,
+		result: &ToolResultDisplay,
+		expanded: bool,
+		theme: &Theme,
+		width: u16,
+	) -> Vec<String> {
+		let pattern = arg_str(args, "pattern");
+		let call_sections = vec![OutputSection {
+			label: Some(theme.dim("Pattern")),
+			lines: vec![pattern.to_owned()],
+		}];
+		render_combined_block("Find", call_sections, result, Some("Files"), 5, 20, expanded, theme, width)
 	}
 }
 
@@ -375,7 +536,7 @@ impl ToolRenderer for DefaultRenderer {
 		theme: &Theme,
 		width: u16,
 	) -> Vec<String> {
-		render_result_block(&self.name, result, None, 3, 10, expanded, theme, width)
+		render_result_block(&self.name, result, None, 5, 20, expanded, theme, width)
 	}
 }
 
@@ -457,22 +618,22 @@ mod tests {
 	#[test]
 	fn bash_render_result_expanded_shows_more_lines() {
 		let theme = test_theme();
-		let content = (0..8)
+		// Use 15 lines: collapsed (max 10) should truncate, expanded (max 30) should
+		// not.
+		let content = (0..15)
 			.map(|i| format!("line {i}"))
 			.collect::<Vec<_>>()
 			.join("\n");
 		let result = ToolResultDisplay { content, is_error: false };
 		let collapsed = BashRenderer.render_result(&result, false, &theme, 80);
 		let expanded = BashRenderer.render_result(&result, true, &theme, 80);
-		// 8 lines: collapsed (max 3) should have "more lines", expanded (max 10) should
-		// not
 		assert!(
 			collapsed.iter().any(|l| l.contains("more lines")),
-			"collapsed output should truncate 8 lines at limit 3",
+			"collapsed output should truncate 15 lines at limit 10",
 		);
 		assert!(
 			!expanded.iter().any(|l| l.contains("more lines")),
-			"expanded output should show all 8 lines without truncation",
+			"expanded output should show all 15 lines without truncation",
 		);
 	}
 
@@ -679,5 +840,130 @@ mod tests {
 			lines.iter().any(|l| l.contains("UnknownTool")),
 			"unknown tool should show its name via DefaultRenderer",
 		);
+	}
+
+	// ── render_combined ────────────────────────────────────────────
+
+	#[test]
+	fn bash_render_combined_has_command_and_output() {
+		let theme = test_theme();
+		let args = serde_json::json!({ "command": "ls -la" });
+		let result = success_result();
+		let lines = BashRenderer.render_combined(&args, &result, false, &theme, 80);
+		assert!(!lines.is_empty());
+		assert!(lines.iter().any(|l| l.contains("Bash")), "combined block should mention Bash");
+		assert!(
+			lines.iter().any(|l| l.contains("$ ls -la")),
+			"combined block should show command",
+		);
+		assert!(
+			lines.iter().any(|l| l.contains("operation completed")),
+			"combined block should show result content",
+		);
+	}
+
+	#[test]
+	fn bash_render_combined_error() {
+		let theme = test_theme();
+		let args = serde_json::json!({ "command": "bad" });
+		let result = error_result();
+		let lines = BashRenderer.render_combined(&args, &result, false, &theme, 80);
+		assert!(lines.iter().any(|l| l.contains("\u{2718}")), "error combined should show cross");
+	}
+
+	#[test]
+	fn write_render_combined_has_file() {
+		let theme = test_theme();
+		let args = serde_json::json!({ "file_path": "output.txt" });
+		let result = success_result();
+		let lines = WriteRenderer.render_combined(&args, &result, false, &theme, 80);
+		assert!(lines.iter().any(|l| l.contains("Write")), "combined block should mention Write");
+		assert!(
+			lines.iter().any(|l| l.contains("output.txt")),
+			"combined block should show file path",
+		);
+	}
+
+	#[test]
+	fn edit_render_combined_has_file_and_diff() {
+		let theme = test_theme();
+		let args = serde_json::json!({
+			"file_path": "lib.rs",
+			"old_string": "fn old() {}",
+			"new_string": "fn new() {}"
+		});
+		let result = success_result();
+		let lines = EditRenderer.render_combined(&args, &result, false, &theme, 80);
+		assert!(lines.iter().any(|l| l.contains("Edit")), "combined block should mention Edit");
+		assert!(lines.iter().any(|l| l.contains("lib.rs")), "combined block should show file path");
+		assert!(
+			lines.iter().any(|l| l.contains("- fn old()")),
+			"combined block should show removed lines",
+		);
+		assert!(
+			lines.iter().any(|l| l.contains("+ fn new()")),
+			"combined block should show added lines",
+		);
+	}
+
+	#[test]
+	fn grep_render_combined_has_pattern_and_matches() {
+		let theme = test_theme();
+		let args = serde_json::json!({ "pattern": "TODO" });
+		let result = success_result();
+		let lines = GrepRenderer.render_combined(&args, &result, false, &theme, 80);
+		assert!(lines.iter().any(|l| l.contains("Grep")), "combined block should mention Grep");
+		assert!(
+			lines.iter().any(|l| l.contains("TODO")),
+			"combined block should show pattern",
+		);
+	}
+
+	#[test]
+	fn find_render_combined_has_pattern_and_files() {
+		let theme = test_theme();
+		let args = serde_json::json!({ "pattern": "*.rs" });
+		let result = success_result();
+		let lines = FindRenderer.render_combined(&args, &result, false, &theme, 80);
+		assert!(lines.iter().any(|l| l.contains("Find")), "combined block should mention Find");
+		assert!(
+			lines.iter().any(|l| l.contains("*.rs")),
+			"combined block should show pattern",
+		);
+	}
+
+	#[test]
+	fn read_render_combined_delegates_to_render_result() {
+		let theme = test_theme();
+		let args = serde_json::json!({ "file_path": "src/main.rs" });
+		let result = success_result();
+		let combined = ReadRenderer.render_combined(&args, &result, false, &theme, 80);
+		let plain = ReadRenderer.render_result(&result, false, &theme, 80);
+		assert_eq!(combined, plain, "Read render_combined should delegate to render_result");
+	}
+
+	#[test]
+	fn default_render_combined_delegates_to_render_result() {
+		let theme = test_theme();
+		let renderer = DefaultRenderer { name: "CustomTool".to_owned() };
+		let args = serde_json::json!({});
+		let result = success_result();
+		let combined = renderer.render_combined(&args, &result, false, &theme, 80);
+		let plain = renderer.render_result(&result, false, &theme, 80);
+		assert_eq!(combined, plain, "Default render_combined should delegate to render_result");
+	}
+
+	#[test]
+	fn bash_render_combined_single_border_block() {
+		let theme = test_theme();
+		let args = serde_json::json!({ "command": "echo hi" });
+		let result = ToolResultDisplay { content: "hi".to_owned(), is_error: false };
+		let lines = BashRenderer.render_combined(&args, &result, false, &theme, 80);
+		// Count top borders (╭) — should be exactly 1
+		let top_borders = lines.iter().filter(|l| l.contains('\u{256d}')).count();
+		assert_eq!(top_borders, 1, "combined block should have exactly one top border");
+		// Count bottom borders (╰) — should be exactly 1
+		let bottom_borders = lines.iter().filter(|l| l.contains('\u{2570}')).count();
+		assert_eq!(bottom_borders, 1, "combined block should have exactly one bottom border");
 	}
 }
