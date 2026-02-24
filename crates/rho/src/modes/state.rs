@@ -7,6 +7,8 @@ pub enum AppMode {
 	Idle,
 	/// Agent is running, streaming tokens.
 	Streaming,
+	/// A bang command (`!cmd`) is running with streaming output.
+	BangRunning,
 	/// Compaction LLM call in progress.
 	#[allow(dead_code, reason = "variant reserved for upcoming compaction feature")]
 	Compacting,

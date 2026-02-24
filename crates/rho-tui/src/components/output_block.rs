@@ -70,8 +70,8 @@ pub fn render_output_block(opts: &OutputBlockOptions, width: u16) -> Vec<String>
 
 	let mut lines = Vec::new();
 
-	// Top border: ╭─── header ───────────╮
-	let header_fill = w.saturating_sub(4 + opts.header_width); // 4 = ╭─ + space + ─╮
+	// Top border: ╭─ header ─────────────╮
+	let header_fill = w.saturating_sub(5 + opts.header_width); // 5 = ╭─ + space + space + ╮
 	let top = format!(
 		"{}{} {} {}{}",
 		border(box_chars.top_left),
@@ -88,7 +88,7 @@ pub fn render_output_block(opts: &OutputBlockOptions, width: u16) -> Vec<String>
 		if i > 0 || section.label.is_some() {
 			if let Some(ref label) = section.label {
 				let label_width = rho_text::width::visible_width_str(label);
-				let fill = w.saturating_sub(4 + label_width);
+				let fill = w.saturating_sub(5 + label_width);
 				let divider = format!(
 					"{}{} {} {}{}",
 					border(box_chars.tee_right),
@@ -188,5 +188,29 @@ mod tests {
 		};
 		let result = render_output_block(&opts, 3);
 		assert!(result.is_empty()); // Too narrow
+	}
+
+	#[test]
+	fn test_all_lines_fit_within_width() {
+		let width: u16 = 80;
+		let opts = OutputBlockOptions {
+			header:       "Bash".to_owned(),
+			header_width: 4,
+			state:        OutputBlockState::Success,
+			sections:     vec![OutputSection {
+				label: Some("Output".to_owned()),
+				lines: vec!["line 1".to_owned(), "line 2".to_owned()],
+			}],
+			border_style: Box::new(|s| s.to_owned()),
+			bg_style:     None,
+		};
+		let result = render_output_block(&opts, width);
+		for (i, line) in result.iter().enumerate() {
+			let vis_w = rho_text::width::visible_width_str(line);
+			assert!(
+				vis_w <= width as usize,
+				"line {i} has visible width {vis_w} but terminal width is {width}: {line:?}",
+			);
+		}
 	}
 }

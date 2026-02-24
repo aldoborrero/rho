@@ -35,13 +35,46 @@ pub async fn execute_command(ctx: &CommandContext<'_>) -> anyhow::Result<Command
 	}
 }
 
-/// Execute a `!` shell command directly.
-pub async fn execute_bang(command: &str, tools: &ToolRegistry) -> anyhow::Result<String> {
+/// Execute a `!` shell command directly, returning structured output.
+pub async fn execute_bang(
+	command: &str,
+	tools: &ToolRegistry,
+) -> anyhow::Result<rho_agent::tools::ToolOutput> {
 	let cwd = std::env::current_dir()?;
-	let result = tools
+	tools
 		.execute("bash", serde_json::json!({"command": command}), &cwd)
-		.await?;
-	Ok(result.content)
+		.await
+}
+
+/// Execute a `!` shell command with streaming output callback.
+///
+/// Calls `rho_tools::shell::execute_shell` directly (bypassing `ToolRegistry`)
+/// to enable streaming chunks via `on_chunk`.
+pub async fn execute_bang_streaming<F>(
+	command: &str,
+	_tools: &ToolRegistry,
+	on_chunk: F,
+) -> anyhow::Result<rho_agent::tools::ToolOutput>
+where
+	F: Fn(String) + Send + Sync + 'static,
+{
+	let cwd = std::env::current_dir()?;
+	let options = rho_tools::shell::ShellExecuteOptions {
+		command:       command.to_owned(),
+		cwd:           Some(cwd.to_string_lossy().into_owned()),
+		env:           None,
+		session_env:   None,
+		timeout_ms:    None,
+		snapshot_path: None,
+	};
+	let on_chunk_box: Box<dyn Fn(String) + Send + Sync> = Box::new(on_chunk);
+	let result = rho_tools::shell::execute_shell(options, Some(on_chunk_box)).await?;
+
+	let is_error = result.exit_code.is_none_or(|c| c != 0);
+	Ok(rho_agent::tools::ToolOutput {
+		content: String::new(), // Output was already streamed via callback
+		is_error,
+	})
 }
 
 #[cfg(test)]

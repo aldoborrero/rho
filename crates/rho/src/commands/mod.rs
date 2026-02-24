@@ -10,6 +10,6 @@ pub mod handlers;
 mod registry;
 mod types;
 
-pub use dispatch::{execute_bang, execute_command};
+pub use dispatch::{execute_bang, execute_bang_streaming, execute_command};
 pub use registry::{COMMANDS, parse_command};
 pub use types::{CommandContext, CommandResult, SlashCommand, SubcommandDef};
