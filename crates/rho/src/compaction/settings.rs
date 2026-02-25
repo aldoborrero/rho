@@ -3,21 +3,8 @@
 //! oh-my-pi ref: `compaction.ts` `CompactionSettings`, `effectiveReserveTokens()`,
 //! `shouldCompact()`
 
-/// Configuration for context compaction.
-pub struct CompactionSettings {
-	/// Whether auto-compaction is enabled.
-	pub enabled:            bool,
-	/// Minimum reserved tokens for the response.
-	pub reserve_tokens:     u32,
-	/// Number of recent tokens to keep uncompacted.
-	pub keep_recent_tokens: u32,
-}
-
-impl Default for CompactionSettings {
-	fn default() -> Self {
-		Self { enabled: true, reserve_tokens: 16_384, keep_recent_tokens: 20_000 }
-	}
-}
+// Re-export the canonical CompactionSettings from the layered settings system.
+pub use crate::settings::CompactionSettings;
 
 /// Calculate effective reserve tokens: `max(15% of window, reserve_tokens)`.
 ///
