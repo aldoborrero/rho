@@ -2,6 +2,7 @@ use std::{fmt::Write as _, path::Path};
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
+use tokio_util::sync::CancellationToken;
 
 use super::{Tool, ToolOutput};
 
@@ -46,7 +47,7 @@ impl Tool for FindTool {
 		})
 	}
 
-	async fn execute(&self, input: Value, cwd: &Path) -> anyhow::Result<ToolOutput> {
+	async fn execute(&self, input: Value, cwd: &Path, _cancel: &CancellationToken) -> anyhow::Result<ToolOutput> {
 		let pattern = input
 			.get("pattern")
 			.and_then(Value::as_str)
@@ -84,11 +85,11 @@ impl Tool for FindTool {
 			cache: Some(false),
 			sort_by_mtime: Some(true),
 			include_node_modules: None,
-			timeout_ms: Some(30_000),
 		};
 
 		// Run in a blocking task since rho-tools glob is synchronous.
-		let result = tokio::task::spawn_blocking(move || rho_tools::glob::glob(options, None))
+		let ct = rho_tools::cancel::CancelToken::new(Some(30_000));
+		let result = tokio::task::spawn_blocking(move || rho_tools::glob::glob(options, None, ct))
 			.await
 			.map_err(|e| anyhow::anyhow!("Find task panicked: {e}"))?;
 
@@ -124,6 +125,8 @@ impl Tool for FindTool {
 mod tests {
 	use std::fs;
 
+	use tokio_util::sync::CancellationToken;
+
 	use super::*;
 
 	#[tokio::test]
@@ -134,8 +137,9 @@ mod tests {
 		fs::write(dir.path().join("readme.md"), "").unwrap();
 
 		let tool = FindTool;
+		let ct = CancellationToken::new();
 		let result = tool
-			.execute(json!({"pattern": "*.rs", "path": dir.path().to_str().unwrap()}), Path::new("/"))
+			.execute(json!({"pattern": "*.rs", "path": dir.path().to_str().unwrap()}), Path::new("/"), &ct)
 			.await
 			.unwrap();
 		assert!(!result.is_error, "Unexpected error: {}", result.content);
@@ -154,10 +158,12 @@ mod tests {
 		fs::write(dir.path().join("test.txt"), "").unwrap();
 
 		let tool = FindTool;
+		let ct = CancellationToken::new();
 		let result = tool
 			.execute(
 				json!({"pattern": "*.nonexistent", "path": dir.path().to_str().unwrap()}),
 				Path::new("/"),
+				&ct,
 			)
 			.await
 			.unwrap();

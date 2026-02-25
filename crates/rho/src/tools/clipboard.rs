@@ -2,6 +2,7 @@ use std::path::Path;
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
+use tokio_util::sync::CancellationToken;
 
 use super::{Tool, ToolOutput};
 
@@ -31,7 +32,7 @@ impl Tool for ClipboardTool {
 		})
 	}
 
-	async fn execute(&self, input: Value, _cwd: &Path) -> anyhow::Result<ToolOutput> {
+	async fn execute(&self, input: Value, _cwd: &Path, _cancel: &CancellationToken) -> anyhow::Result<ToolOutput> {
 		let text = input
 			.get("text")
 			.and_then(Value::as_str)
@@ -54,12 +55,15 @@ impl Tool for ClipboardTool {
 
 #[cfg(test)]
 mod tests {
+	use tokio_util::sync::CancellationToken;
+
 	use super::*;
 
 	#[tokio::test]
 	async fn test_clipboard_missing_text() {
 		let tool = ClipboardTool;
-		let result = tool.execute(json!({}), Path::new("/")).await;
+		let ct = CancellationToken::new();
+		let result = tool.execute(json!({}), Path::new("/"), &ct).await;
 		assert!(result.is_err(), "Expected error for missing text parameter");
 	}
 }

@@ -2,6 +2,7 @@ use std::{fmt::Write as _, path::Path};
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
+use tokio_util::sync::CancellationToken;
 
 use super::{Tool, ToolOutput};
 
@@ -55,7 +56,7 @@ impl Tool for WorkmuxTool {
 		})
 	}
 
-	async fn execute(&self, input: Value, _cwd: &Path) -> anyhow::Result<ToolOutput> {
+	async fn execute(&self, input: Value, _cwd: &Path, _cancel: &CancellationToken) -> anyhow::Result<ToolOutput> {
 		let action = input
 			.get("action")
 			.and_then(Value::as_str)
@@ -237,13 +238,16 @@ impl Tool for WorkmuxTool {
 
 #[cfg(test)]
 mod tests {
+	use tokio_util::sync::CancellationToken;
+
 	use super::*;
 
 	#[tokio::test]
 	async fn test_workmux_detect() {
 		let tool = WorkmuxTool;
+		let ct = CancellationToken::new();
 		let result = tool
-			.execute(json!({"action": "detect"}), Path::new("/"))
+			.execute(json!({"action": "detect"}), Path::new("/"), &ct)
 			.await
 			.unwrap();
 		// Detection should succeed even without a running multiplexer
@@ -254,8 +258,9 @@ mod tests {
 	#[tokio::test]
 	async fn test_workmux_unknown_action() {
 		let tool = WorkmuxTool;
+		let ct = CancellationToken::new();
 		let result = tool
-			.execute(json!({"action": "invalid"}), Path::new("/"))
+			.execute(json!({"action": "invalid"}), Path::new("/"), &ct)
 			.await
 			.unwrap();
 		assert!(result.is_error);
@@ -269,7 +274,8 @@ mod tests {
 	#[tokio::test]
 	async fn test_workmux_missing_action() {
 		let tool = WorkmuxTool;
-		let result = tool.execute(json!({}), Path::new("/")).await;
+		let ct = CancellationToken::new();
+		let result = tool.execute(json!({}), Path::new("/"), &ct).await;
 		assert!(result.is_err(), "Expected error for missing action parameter");
 	}
 }

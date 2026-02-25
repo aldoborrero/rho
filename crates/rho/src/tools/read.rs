@@ -3,6 +3,7 @@ use std::{fmt::Write as _, path::Path};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use tokio::fs;
+use tokio_util::sync::CancellationToken;
 
 use super::{Tool, ToolOutput};
 
@@ -43,7 +44,7 @@ impl Tool for ReadTool {
 		})
 	}
 
-	async fn execute(&self, input: Value, cwd: &Path) -> anyhow::Result<ToolOutput> {
+	async fn execute(&self, input: Value, cwd: &Path, _cancel: &CancellationToken) -> anyhow::Result<ToolOutput> {
 		let raw_path = input
 			.get("path")
 			.and_then(Value::as_str)
@@ -113,6 +114,7 @@ mod tests {
 	use std::io::Write as _;
 
 	use tempfile::NamedTempFile;
+	use tokio_util::sync::CancellationToken;
 
 	use super::*;
 
@@ -124,8 +126,9 @@ mod tests {
 		writeln!(tmp, "line three").unwrap();
 
 		let tool = ReadTool;
+		let ct = CancellationToken::new();
 		let result = tool
-			.execute(json!({"path": tmp.path().to_str().unwrap()}), Path::new("/"))
+			.execute(json!({"path": tmp.path().to_str().unwrap()}), Path::new("/"), &ct)
 			.await
 			.unwrap();
 		assert!(!result.is_error);
@@ -144,10 +147,12 @@ mod tests {
 		}
 
 		let tool = ReadTool;
+		let ct = CancellationToken::new();
 		let result = tool
 			.execute(
 				json!({"path": tmp.path().to_str().unwrap(), "offset": 3, "limit": 2}),
 				Path::new("/"),
+				&ct,
 			)
 			.await
 			.unwrap();
@@ -161,8 +166,9 @@ mod tests {
 	#[tokio::test]
 	async fn test_read_nonexistent_file() {
 		let tool = ReadTool;
+		let ct = CancellationToken::new();
 		let result = tool
-			.execute(json!({"path": "/tmp/nonexistent_file_abc123xyz"}), Path::new("/"))
+			.execute(json!({"path": "/tmp/nonexistent_file_abc123xyz"}), Path::new("/"), &ct)
 			.await
 			.unwrap();
 		assert!(result.is_error);
@@ -175,8 +181,9 @@ mod tests {
 		std::fs::write(dir.path().join("b.txt"), "world").unwrap();
 
 		let tool = ReadTool;
+		let ct = CancellationToken::new();
 		let result = tool
-			.execute(json!({"path": dir.path().to_str().unwrap()}), Path::new("/"))
+			.execute(json!({"path": dir.path().to_str().unwrap()}), Path::new("/"), &ct)
 			.await
 			.unwrap();
 		assert!(!result.is_error);

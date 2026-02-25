@@ -6,6 +6,7 @@ use std::{
 use async_trait::async_trait;
 use rho_tools::shell::{ShellExecuteOptions, execute_shell};
 use serde_json::{Value, json};
+use tokio_util::sync::CancellationToken;
 
 use super::{Tool, ToolOutput};
 
@@ -45,7 +46,7 @@ impl Tool for BashTool {
 		})
 	}
 
-	async fn execute(&self, input: Value, cwd: &Path) -> anyhow::Result<ToolOutput> {
+	async fn execute(&self, input: Value, cwd: &Path, _cancel: &CancellationToken) -> anyhow::Result<ToolOutput> {
 		let command = input
 			.get("command")
 			.and_then(Value::as_str)
@@ -71,11 +72,13 @@ impl Tool for BashTool {
 			cwd:           Some(cwd.to_string_lossy().into_owned()),
 			env:           None,
 			session_env:   None,
-			timeout_ms:    Some(u32::try_from(timeout_secs * 1000).unwrap_or(u32::MAX)),
 			snapshot_path: None,
 		};
 
-		let result = execute_shell(options, Some(on_chunk)).await;
+		let ct = rho_tools::cancel::CancelToken::new(Some(
+			u32::try_from(timeout_secs * 1000).unwrap_or(u32::MAX),
+		));
+		let result = execute_shell(options, Some(on_chunk), ct).await;
 
 		match result {
 			Ok(result) => {
@@ -110,13 +113,16 @@ impl Tool for BashTool {
 
 #[cfg(test)]
 mod tests {
+	use tokio_util::sync::CancellationToken;
+
 	use super::*;
 
 	#[tokio::test]
 	async fn test_bash_echo() {
 		let tool = BashTool;
+		let ct = CancellationToken::new();
 		let result = tool
-			.execute(json!({"command": "echo hello"}), Path::new("."))
+			.execute(json!({"command": "echo hello"}), Path::new("."), &ct)
 			.await
 			.unwrap();
 		assert_eq!(result.content.trim(), "hello");
@@ -126,8 +132,9 @@ mod tests {
 	#[tokio::test]
 	async fn test_bash_error() {
 		let tool = BashTool;
+		let ct = CancellationToken::new();
 		let result = tool
-			.execute(json!({"command": "false"}), Path::new("."))
+			.execute(json!({"command": "false"}), Path::new("."), &ct)
 			.await
 			.unwrap();
 		assert!(result.is_error);
@@ -136,15 +143,17 @@ mod tests {
 	#[tokio::test]
 	async fn test_bash_missing_command() {
 		let tool = BashTool;
-		let result = tool.execute(json!({}), Path::new(".")).await;
+		let ct = CancellationToken::new();
+		let result = tool.execute(json!({}), Path::new("."), &ct).await;
 		assert!(result.is_err());
 	}
 
 	#[tokio::test]
 	async fn test_bash_cwd() {
 		let tool = BashTool;
+		let ct = CancellationToken::new();
 		let result = tool
-			.execute(json!({"command": "pwd"}), Path::new("/tmp"))
+			.execute(json!({"command": "pwd"}), Path::new("/tmp"), &ct)
 			.await
 			.unwrap();
 		assert_eq!(result.content.trim(), "/tmp");

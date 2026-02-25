@@ -3,6 +3,7 @@ use std::path::Path;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use tokio::fs;
+use tokio_util::sync::CancellationToken;
 
 use super::{Tool, ToolOutput};
 
@@ -36,7 +37,7 @@ impl Tool for WriteTool {
 		})
 	}
 
-	async fn execute(&self, input: Value, cwd: &Path) -> anyhow::Result<ToolOutput> {
+	async fn execute(&self, input: Value, cwd: &Path, _cancel: &CancellationToken) -> anyhow::Result<ToolOutput> {
 		let raw_path = input
 			.get("path")
 			.and_then(Value::as_str)
@@ -66,6 +67,8 @@ impl Tool for WriteTool {
 
 #[cfg(test)]
 mod tests {
+	use tokio_util::sync::CancellationToken;
+
 	use super::*;
 
 	#[tokio::test]
@@ -74,10 +77,12 @@ mod tests {
 		let file_path = dir.path().join("test.txt");
 
 		let tool = WriteTool;
+		let ct = CancellationToken::new();
 		let result = tool
 			.execute(
 				json!({"path": file_path.to_str().unwrap(), "content": "hello world"}),
 				Path::new("/"),
+				&ct,
 			)
 			.await
 			.unwrap();
@@ -93,8 +98,9 @@ mod tests {
 		let file_path = dir.path().join("a").join("b").join("c").join("test.txt");
 
 		let tool = WriteTool;
+		let ct = CancellationToken::new();
 		let result = tool
-			.execute(json!({"path": file_path.to_str().unwrap(), "content": "nested"}), Path::new("/"))
+			.execute(json!({"path": file_path.to_str().unwrap(), "content": "nested"}), Path::new("/"), &ct)
 			.await
 			.unwrap();
 		assert!(!result.is_error);
@@ -110,10 +116,12 @@ mod tests {
 		std::fs::write(&file_path, "old content").unwrap();
 
 		let tool = WriteTool;
+		let ct = CancellationToken::new();
 		let result = tool
 			.execute(
 				json!({"path": file_path.to_str().unwrap(), "content": "new content"}),
 				Path::new("/"),
+				&ct,
 			)
 			.await
 			.unwrap();

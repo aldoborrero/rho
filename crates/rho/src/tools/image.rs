@@ -2,6 +2,7 @@ use std::path::Path;
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
+use tokio_util::sync::CancellationToken;
 
 use super::{Tool, ToolOutput};
 
@@ -47,7 +48,7 @@ impl Tool for ImageTool {
 		})
 	}
 
-	async fn execute(&self, input: Value, cwd: &Path) -> anyhow::Result<ToolOutput> {
+	async fn execute(&self, input: Value, cwd: &Path, _cancel: &CancellationToken) -> anyhow::Result<ToolOutput> {
 		let action = input
 			.get("action")
 			.and_then(Value::as_str)
@@ -154,6 +155,8 @@ impl Tool for ImageTool {
 
 #[cfg(test)]
 mod tests {
+	use tokio_util::sync::CancellationToken;
+
 	use super::*;
 
 	#[tokio::test]
@@ -173,8 +176,9 @@ mod tests {
 		std::fs::write(&img_path, png_bytes).unwrap();
 
 		let tool = ImageTool;
+		let ct = CancellationToken::new();
 		let result = tool
-			.execute(json!({"action": "info", "path": img_path.to_str().unwrap()}), Path::new("/"))
+			.execute(json!({"action": "info", "path": img_path.to_str().unwrap()}), Path::new("/"), &ct)
 			.await
 			.unwrap();
 		assert!(!result.is_error, "Unexpected error: {}", result.content);
@@ -185,8 +189,9 @@ mod tests {
 	#[tokio::test]
 	async fn test_image_unknown_action() {
 		let tool = ImageTool;
+		let ct = CancellationToken::new();
 		let result = tool
-			.execute(json!({"action": "invalid", "path": "/tmp/test.png"}), Path::new("/"))
+			.execute(json!({"action": "invalid", "path": "/tmp/test.png"}), Path::new("/"), &ct)
 			.await
 			.unwrap();
 		assert!(result.is_error);
@@ -200,8 +205,9 @@ mod tests {
 	#[tokio::test]
 	async fn test_image_missing_path() {
 		let tool = ImageTool;
+		let ct = CancellationToken::new();
 		let result = tool
-			.execute(json!({"action": "info"}), Path::new("/"))
+			.execute(json!({"action": "info"}), Path::new("/"), &ct)
 			.await;
 		assert!(result.is_err(), "Expected error for missing path parameter");
 	}

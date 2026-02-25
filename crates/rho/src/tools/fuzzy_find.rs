@@ -2,6 +2,7 @@ use std::{fmt::Write as _, path::Path};
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
+use tokio_util::sync::CancellationToken;
 
 use super::{Tool, ToolOutput};
 
@@ -42,7 +43,7 @@ impl Tool for FuzzyFindTool {
 		})
 	}
 
-	async fn execute(&self, input: Value, cwd: &Path) -> anyhow::Result<ToolOutput> {
+	async fn execute(&self, input: Value, cwd: &Path, _cancel: &CancellationToken) -> anyhow::Result<ToolOutput> {
 		let query = input
 			.get("query")
 			.and_then(Value::as_str)
@@ -65,10 +66,10 @@ impl Tool for FuzzyFindTool {
 			gitignore:   Some(true),
 			cache:       Some(false),
 			max_results: Some(max_results),
-			timeout_ms:  Some(30_000),
 		};
 
-		let result = tokio::task::spawn_blocking(move || rho_tools::fd::fuzzy_find(options))
+		let ct = rho_tools::cancel::CancelToken::new(Some(30_000));
+		let result = tokio::task::spawn_blocking(move || rho_tools::fd::fuzzy_find(options, ct))
 			.await
 			.map_err(|e| anyhow::anyhow!("Fuzzy find task panicked: {e}"))?;
 
@@ -95,6 +96,8 @@ impl Tool for FuzzyFindTool {
 mod tests {
 	use std::fs;
 
+	use tokio_util::sync::CancellationToken;
+
 	use super::*;
 
 	#[tokio::test]
@@ -105,8 +108,9 @@ mod tests {
 		fs::write(dir.path().join("readme.md"), "").unwrap();
 
 		let tool = FuzzyFindTool;
+		let ct = CancellationToken::new();
 		let result = tool
-			.execute(json!({"query": "ctrl", "path": dir.path().to_str().unwrap()}), Path::new("/"))
+			.execute(json!({"query": "ctrl", "path": dir.path().to_str().unwrap()}), Path::new("/"), &ct)
 			.await
 			.unwrap();
 		assert!(!result.is_error, "Unexpected error: {}", result.content);
@@ -123,10 +127,12 @@ mod tests {
 		fs::write(dir.path().join("hello.txt"), "").unwrap();
 
 		let tool = FuzzyFindTool;
+		let ct = CancellationToken::new();
 		let result = tool
 			.execute(
 				json!({"query": "zzznotfound", "path": dir.path().to_str().unwrap()}),
 				Path::new("/"),
+				&ct,
 			)
 			.await
 			.unwrap();

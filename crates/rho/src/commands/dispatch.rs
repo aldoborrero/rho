@@ -42,8 +42,9 @@ pub async fn execute_bang(
 	tools: &ToolRegistry,
 ) -> anyhow::Result<rho_agent::tools::ToolOutput> {
 	let cwd = std::env::current_dir()?;
+	let ct = tokio_util::sync::CancellationToken::new();
 	tools
-		.execute("bash", serde_json::json!({"command": command}), &cwd)
+		.execute("bash", serde_json::json!({"command": command}), &cwd, &ct)
 		.await
 }
 
@@ -65,11 +66,11 @@ where
 		cwd:           Some(cwd.to_string_lossy().into_owned()),
 		env:           None,
 		session_env:   None,
-		timeout_ms:    None,
 		snapshot_path: None,
 	};
 	let on_chunk_box: Box<dyn Fn(String) + Send + Sync> = Box::new(on_chunk);
-	let result = rho_tools::shell::execute_shell(options, Some(on_chunk_box)).await?;
+	let ct = rho_tools::cancel::CancelToken::new(Some(30_000)); // 30s timeout for dispatch
+	let result = rho_tools::shell::execute_shell(options, Some(on_chunk_box), ct).await?;
 
 	let is_error = result.exit_code.is_none_or(|c| c != 0);
 	Ok(rho_agent::tools::ToolOutput {

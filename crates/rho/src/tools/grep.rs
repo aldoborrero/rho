@@ -2,6 +2,7 @@ use std::{fmt::Write as _, path::Path};
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
+use tokio_util::sync::CancellationToken;
 
 use super::{Tool, ToolOutput};
 
@@ -62,7 +63,7 @@ impl Tool for GrepTool {
 		})
 	}
 
-	async fn execute(&self, input: Value, cwd: &Path) -> anyhow::Result<ToolOutput> {
+	async fn execute(&self, input: Value, cwd: &Path, _cancel: &CancellationToken) -> anyhow::Result<ToolOutput> {
 		let pattern = input
 			.get("pattern")
 			.and_then(Value::as_str)
@@ -106,11 +107,11 @@ impl Tool for GrepTool {
 			context:        None,
 			max_columns:    Some(2000),
 			mode:           Some("content".to_owned()),
-			timeout_ms:     Some(30_000),
 		};
 
 		// Run in a blocking task since rho-tools grep is synchronous.
-		let result = tokio::task::spawn_blocking(move || rho_tools::grep::grep(options, None))
+		let ct = rho_tools::cancel::CancelToken::new(Some(30_000));
+		let result = tokio::task::spawn_blocking(move || rho_tools::grep::grep(options, None, ct))
 			.await
 			.map_err(|e| anyhow::anyhow!("Grep task panicked: {e}"))?;
 
@@ -163,6 +164,8 @@ impl Tool for GrepTool {
 mod tests {
 	use std::fs;
 
+	use tokio_util::sync::CancellationToken;
+
 	use super::*;
 
 	#[tokio::test]
@@ -171,8 +174,9 @@ mod tests {
 		fs::write(dir.path().join("test.txt"), "hello world\nfoo bar\nhello again").unwrap();
 
 		let tool = GrepTool;
+		let ct = CancellationToken::new();
 		let result = tool
-			.execute(json!({"pattern": "hello", "path": dir.path().to_str().unwrap()}), Path::new("/"))
+			.execute(json!({"pattern": "hello", "path": dir.path().to_str().unwrap()}), Path::new("/"), &ct)
 			.await
 			.unwrap();
 		assert!(!result.is_error, "Unexpected error: {}", result.content);
@@ -195,10 +199,12 @@ mod tests {
 		fs::write(dir.path().join("test.txt"), "hello world").unwrap();
 
 		let tool = GrepTool;
+		let ct = CancellationToken::new();
 		let result = tool
 			.execute(
 				json!({"pattern": "zzzznotfound", "path": dir.path().to_str().unwrap()}),
 				Path::new("/"),
+				&ct,
 			)
 			.await
 			.unwrap();
@@ -212,10 +218,12 @@ mod tests {
 		fs::write(dir.path().join("test.txt"), "Hello World").unwrap();
 
 		let tool = GrepTool;
+		let ct = CancellationToken::new();
 		let result = tool
 			.execute(
 				json!({"pattern": "hello", "path": dir.path().to_str().unwrap(), "i": true}),
 				Path::new("/"),
+				&ct,
 			)
 			.await
 			.unwrap();
@@ -234,10 +242,12 @@ mod tests {
 		fs::write(dir.path().join("b.txt"), "fn main() {}").unwrap();
 
 		let tool = GrepTool;
+		let ct = CancellationToken::new();
 		let result = tool
 			.execute(
 				json!({"pattern": "fn main", "path": dir.path().to_str().unwrap(), "glob": "*.rs"}),
 				Path::new("/"),
+				&ct,
 			)
 			.await
 			.unwrap();

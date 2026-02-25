@@ -2,6 +2,7 @@ use std::{fmt::Write as _, path::Path};
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
+use tokio_util::sync::CancellationToken;
 
 use super::{Tool, ToolOutput};
 
@@ -42,7 +43,7 @@ impl Tool for ProcessTool {
 		})
 	}
 
-	async fn execute(&self, input: Value, _cwd: &Path) -> anyhow::Result<ToolOutput> {
+	async fn execute(&self, input: Value, _cwd: &Path, _cancel: &CancellationToken) -> anyhow::Result<ToolOutput> {
 		let action = input
 			.get("action")
 			.and_then(Value::as_str)
@@ -97,14 +98,17 @@ impl Tool for ProcessTool {
 
 #[cfg(test)]
 mod tests {
+	use tokio_util::sync::CancellationToken;
+
 	use super::*;
 
 	#[tokio::test]
 	async fn test_process_list_descendants_current() {
 		let tool = ProcessTool;
+		let ct = CancellationToken::new();
 		let pid = std::process::id();
 		let result = tool
-			.execute(json!({"action": "list_descendants", "pid": pid}), Path::new("/"))
+			.execute(json!({"action": "list_descendants", "pid": pid}), Path::new("/"), &ct)
 			.await
 			.unwrap();
 		// Current process may or may not have children; just verify no error
@@ -114,8 +118,9 @@ mod tests {
 	#[tokio::test]
 	async fn test_process_unknown_action() {
 		let tool = ProcessTool;
+		let ct = CancellationToken::new();
 		let result = tool
-			.execute(json!({"action": "invalid", "pid": 1}), Path::new("/"))
+			.execute(json!({"action": "invalid", "pid": 1}), Path::new("/"), &ct)
 			.await
 			.unwrap();
 		assert!(result.is_error);
@@ -129,7 +134,8 @@ mod tests {
 	#[tokio::test]
 	async fn test_process_missing_action() {
 		let tool = ProcessTool;
-		let result = tool.execute(json!({"pid": 1}), Path::new("/")).await;
+		let ct = CancellationToken::new();
+		let result = tool.execute(json!({"pid": 1}), Path::new("/"), &ct).await;
 		assert!(result.is_err(), "Expected error for missing action parameter");
 	}
 }
