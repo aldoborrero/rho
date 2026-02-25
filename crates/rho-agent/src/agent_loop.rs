@@ -32,6 +32,9 @@ pub struct AgentConfig {
 	pub api_key:       Option<String>,
 	/// Temperature override. `None` or negative = provider default.
 	pub temperature:   Option<f32>,
+	/// Cancellation token — when cancelled, the loop exits with
+	/// `AgentOutcome::Cancelled` at the next checkpoint.
+	pub abort:         Option<CancellationToken>,
 }
 
 /// Run the autonomous agent loop.
@@ -58,6 +61,11 @@ pub async fn run_agent_loop(
 	let mut cumulative_usage: Option<Usage> = None;
 
 	loop {
+		// Checkpoint 1: before starting a new turn.
+		if let Some(outcome) = check_cancelled(config.abort.as_ref(), &event_tx).await {
+			return outcome;
+		}
+
 		turn += 1;
 		let _ = event_tx.send(AgentEvent::TurnStart { turn }).await;
 
@@ -79,6 +87,7 @@ pub async fn run_agent_loop(
 			reasoning: thinking_to_reasoning(config.thinking),
 			temperature,
 			retry: config.retry.clone(),
+			abort: config.abort.clone(),
 			..Default::default()
 		};
 
@@ -172,13 +181,18 @@ pub async fn run_agent_loop(
 			// Execute tools
 			for block in &message.content {
 				if let ContentBlock::ToolUse { id, name, input } = block {
+					// Checkpoint 2: before each tool execution.
+					if let Some(outcome) = check_cancelled(config.abort.as_ref(), &event_tx).await {
+						return outcome;
+					}
+
 					let _ = event_tx
 						.send(AgentEvent::ToolCallStart { id: id.clone(), name: name.clone() })
 						.await;
 
-					// TODO: replace with real cancel token once run_agent_loop accepts one
+					let cancel = config.abort.clone().unwrap_or_default();
 					let tool_result = tools
-						.execute(name, input.clone(), &config.cwd, &CancellationToken::new())
+						.execute(name, input.clone(), &config.cwd, &cancel)
 						.await;
 
 					let (content, is_error) = match tool_result {
@@ -211,7 +225,10 @@ pub async fn run_agent_loop(
 					}));
 				}
 			}
-			// Loop back to send tool results to LLM
+			// Checkpoint 3: before sending tool results back to LLM.
+			if let Some(outcome) = check_cancelled(config.abort.as_ref(), &event_tx).await {
+				return outcome;
+			}
 			continue;
 		}
 
@@ -227,6 +244,19 @@ pub async fn run_agent_loop(
 		};
 		return emit_done(outcome, &event_tx).await;
 	}
+}
+
+/// Check if the abort token is cancelled. Returns `Some(Cancelled)` if so.
+async fn check_cancelled(
+	abort: Option<&CancellationToken>,
+	event_tx: &mpsc::Sender<AgentEvent>,
+) -> Option<AgentOutcome> {
+	if abort.is_some_and(CancellationToken::is_cancelled) {
+		let outcome = AgentOutcome::Cancelled;
+		let _ = event_tx.send(AgentEvent::Done(outcome.clone())).await;
+		return Some(outcome);
+	}
+	None
 }
 
 /// Emit the [`AgentEvent::Done`] event and return the outcome.
