@@ -46,7 +46,7 @@ impl Tool for BashTool {
 		})
 	}
 
-	async fn execute(&self, input: Value, cwd: &Path, _cancel: &CancellationToken) -> anyhow::Result<ToolOutput> {
+	async fn execute(&self, input: Value, cwd: &Path, cancel: &CancellationToken) -> anyhow::Result<ToolOutput> {
 		let command = input
 			.get("command")
 			.and_then(Value::as_str)
@@ -75,10 +75,20 @@ impl Tool for BashTool {
 			snapshot_path: None,
 		};
 
-		let ct = rho_tools::cancel::CancelToken::new(Some(
+		let mut ct = rho_tools::cancel::CancelToken::new(Some(
 			u32::try_from(timeout_secs * 1000).unwrap_or(u32::MAX),
 		));
+		let internal_abort = ct.emplace_abort_token();
+
+		// Bridge: external CancellationToken → internal CancelToken.
+		let external = cancel.clone();
+		let bridge = tokio::spawn(async move {
+			external.cancelled().await;
+			internal_abort.abort(rho_tools::cancel::AbortReason::Signal);
+		});
+
 		let result = execute_shell(options, Some(on_chunk), ct).await;
+		bridge.abort();
 
 		match result {
 			Ok(result) => {

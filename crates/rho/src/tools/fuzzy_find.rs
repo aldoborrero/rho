@@ -43,7 +43,7 @@ impl Tool for FuzzyFindTool {
 		})
 	}
 
-	async fn execute(&self, input: Value, cwd: &Path, _cancel: &CancellationToken) -> anyhow::Result<ToolOutput> {
+	async fn execute(&self, input: Value, cwd: &Path, cancel: &CancellationToken) -> anyhow::Result<ToolOutput> {
 		let query = input
 			.get("query")
 			.and_then(Value::as_str)
@@ -68,10 +68,20 @@ impl Tool for FuzzyFindTool {
 			max_results: Some(max_results),
 		};
 
-		let ct = rho_tools::cancel::CancelToken::new(Some(30_000));
+		let mut ct = rho_tools::cancel::CancelToken::new(Some(30_000));
+		let internal_abort = ct.emplace_abort_token();
+
+		// Bridge: external CancellationToken → internal CancelToken.
+		let external = cancel.clone();
+		let bridge = tokio::spawn(async move {
+			external.cancelled().await;
+			internal_abort.abort(rho_tools::cancel::AbortReason::Signal);
+		});
+
 		let result = tokio::task::spawn_blocking(move || rho_tools::fd::fuzzy_find(options, ct))
 			.await
 			.map_err(|e| anyhow::anyhow!("Fuzzy find task panicked: {e}"))?;
+		bridge.abort();
 
 		match result {
 			Ok(fuzzy_result) => {
