@@ -1,6 +1,6 @@
 //! Static command registry and input parser.
 
-use super::types::SlashCommand;
+use super::types::{SlashCommand, SubcommandDef};
 
 /// Static registry of all available slash commands.
 pub const COMMANDS: &[SlashCommand] = &[
@@ -94,6 +94,19 @@ pub const COMMANDS: &[SlashCommand] = &[
 		description: "Export session (not yet implemented)",
 		args_hint:   Some("[path]"),
 		subcommands: &[],
+	},
+	SlashCommand {
+		name:        "config",
+		aliases:     &[],
+		description: "View or modify settings",
+		args_hint:   Some("[subcommand] [args]"),
+		subcommands: &[
+			SubcommandDef { name: "list", description: "List all settings" },
+			SubcommandDef { name: "get", description: "Get a setting value" },
+			SubcommandDef { name: "set", description: "Set a setting value" },
+			SubcommandDef { name: "reset", description: "Reset a setting to default" },
+			SubcommandDef { name: "path", description: "Show config file path" },
+		],
 	},
 	SlashCommand {
 		name:        "debug",
