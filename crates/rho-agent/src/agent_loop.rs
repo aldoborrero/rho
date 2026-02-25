@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
+use tokio_util::sync::CancellationToken;
 
 use crate::{
 	convert,
@@ -175,7 +176,10 @@ pub async fn run_agent_loop(
 						.send(AgentEvent::ToolCallStart { id: id.clone(), name: name.clone() })
 						.await;
 
-					let tool_result = tools.execute(name, input.clone(), &config.cwd).await;
+					// TODO: replace with real cancel token once run_agent_loop accepts one
+					let tool_result = tools
+						.execute(name, input.clone(), &config.cwd, &CancellationToken::new())
+						.await;
 
 					let (content, is_error) = match tool_result {
 						Ok(output) => (output.content, output.is_error),

@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use async_trait::async_trait;
+use tokio_util::sync::CancellationToken;
 
 /// Output from executing a tool.
 pub struct ToolOutput {
@@ -21,5 +22,10 @@ pub trait Tool: Send + Sync {
 	fn input_schema(&self) -> serde_json::Value;
 
 	/// Execute the tool with the given input.
-	async fn execute(&self, input: serde_json::Value, cwd: &Path) -> anyhow::Result<ToolOutput>;
+	async fn execute(
+		&self,
+		input: serde_json::Value,
+		cwd: &Path,
+		cancel: &CancellationToken,
+	) -> anyhow::Result<ToolOutput>;
 }
