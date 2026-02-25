@@ -19,18 +19,72 @@ use crate::{
 	tui,
 };
 
+/// An [`AgentEvent`] tagged with the generation that produced it.
+///
+/// The generation counter prevents stale events from an old (cancelled) agent
+/// run from corrupting the session when a new agent run has already started.
+struct TaggedAgentEvent {
+	generation: u64,
+	event:      AgentEvent,
+}
+
 /// Events dispatched through the main event loop.
-pub enum AppEvent {
+enum AppEvent {
 	/// Raw terminal input (key press, paste, resize).
 	Terminal(rho_tui::TerminalEvent),
 	/// Agent event from the autonomous agent loop.
-	Agent(AgentEvent),
+	Agent(TaggedAgentEvent),
 	/// Periodic tick for spinner animation.
 	Tick,
 	/// A chunk of output from a bang command.
 	BangChunk(String),
 	/// Bang command completed.
 	BangDone { is_error: bool },
+}
+
+/// Map a tool name to a human-readable phase label for the status line.
+fn generate_tool_phase(tool_name: &str) -> String {
+	match tool_name {
+		"read" => "Reading file".to_owned(),
+		"write" => "Writing file".to_owned(),
+		"edit" => "Editing file".to_owned(),
+		"bash" => "Running bash".to_owned(),
+		"grep" => "Searching files".to_owned(),
+		"find" | "glob" => "Finding files".to_owned(),
+		"fuzzy_find" => "Fuzzy finding".to_owned(),
+		"clipboard" => "Using clipboard".to_owned(),
+		_ => format!("Running {tool_name}"),
+	}
+}
+
+/// Cancel the active streaming agent and reset UI state.
+///
+/// Increments the generation counter so that any remaining events from the
+/// old agent run are silently dropped.
+fn cancel_streaming(
+	mode: &mut AppMode,
+	app: &mut tui::App,
+	terminal: &impl Terminal,
+	agent_generation: &mut u64,
+) {
+	*mode = AppMode::Idle;
+	*agent_generation += 1;
+	app.chat.finish_streaming();
+	app.status.finish_working();
+	app.update_status_border(terminal.columns());
+}
+
+/// Cancel the running bang command and reset UI state.
+fn cancel_bang(
+	mode: &mut AppMode,
+	app: &mut tui::App,
+	bang_cancel: &mut Option<tokio::sync::oneshot::Sender<()>>,
+) {
+	if let Some(cancel) = bang_cancel.take() {
+		let _ = cancel.send(());
+	}
+	app.chat.finish_bang(true);
+	*mode = AppMode::Idle;
 }
 
 /// Parse a thinking level string into a `ThinkingLevel`.
@@ -45,7 +99,12 @@ fn parse_thinking(s: &str) -> ThinkingLevel {
 
 /// Spawn the autonomous agent loop in a background task.
 ///
-/// Agent events are forwarded as `AppEvent::Agent` through the given channel.
+/// Agent events are forwarded as `AppEvent::Agent` through the given channel,
+/// tagged with the current generation so stale events can be discarded.
+///
+/// The `agent_generation` counter is incremented before spawning so that any
+/// events from a previous agent run are automatically ignored by the event
+/// loop's generation check.
 fn spawn_agent(
 	model: &rho_ai::Model,
 	messages: &[Message],
@@ -54,14 +113,22 @@ fn spawn_agent(
 	settings: &Settings,
 	api_key: &str,
 	tx: &tokio::sync::mpsc::Sender<AppEvent>,
+	agent_generation: &mut u64,
 ) {
+	*agent_generation += 1;
+	let generation = *agent_generation;
+
 	let (agent_tx, mut agent_rx) = tokio::sync::mpsc::channel::<AgentEvent>(64);
 
-	// Forward agent events as AppEvent::Agent
+	// Forward agent events as AppEvent::Agent, tagged with the generation.
 	let forward_tx = tx.clone();
 	tokio::spawn(async move {
 		while let Some(event) = agent_rx.recv().await {
-			if forward_tx.send(AppEvent::Agent(event)).await.is_err() {
+			if forward_tx
+				.send(AppEvent::Agent(TaggedAgentEvent { generation, event }))
+				.await
+				.is_err()
+			{
 				break;
 			}
 		}
@@ -332,6 +399,9 @@ pub async fn run_interactive(
 
 	// Track application mode.
 	let mut mode = AppMode::Idle;
+	// Generation counter: incremented on every agent spawn and cancel.
+	// Events from old generations are silently dropped.
+	let mut agent_generation: u64 = 0;
 	// Cancellation handle for the currently running bang command.
 	let mut bang_cancel: Option<tokio::sync::oneshot::Sender<()>> = None;
 
@@ -343,7 +413,10 @@ pub async fn run_interactive(
 
 		mode = AppMode::Streaming;
 		app.chat.start_streaming();
-		spawn_agent(&model, session.messages(), &tools, &system_prompt, &settings, &api_key, &tx);
+		app.status.clear_work_status();
+		app.status.start_working();
+		app.update_status_border(terminal.columns());
+		spawn_agent(&model, session.messages(), &tools, &system_prompt, &settings, &api_key, &tx, &mut agent_generation);
 	}
 
 	// Perform the initial render.
@@ -362,7 +435,12 @@ pub async fn run_interactive(
 		};
 		match event {
 			Some(AppEvent::Tick) => {
-				if app.chat.tick() {
+				let needs_render = app.chat.tick();
+				if app.status.is_working() {
+					app.update_status_border(terminal.columns());
+					app.tui.request_render();
+					app.render_to_tui(&mut terminal)?;
+				} else if needs_render {
 					app.tui.request_render();
 					app.render_to_tui(&mut terminal)?;
 				}
@@ -373,18 +451,9 @@ pub async fn run_interactive(
 					// Ctrl+C
 					if data == "\x03" {
 						if matches!(mode, AppMode::Streaming) {
-							// Stop the UI streaming state. The background task
-							// will eventually complete; its events are ignored
-							// since mode is now Idle.
-							mode = AppMode::Idle;
-							app.chat.finish_streaming();
+							cancel_streaming(&mut mode, &mut app, &terminal, &mut agent_generation);
 						} else if matches!(mode, AppMode::BangRunning) {
-							// Cancel the running bang command and kill the process.
-							if let Some(cancel) = bang_cancel.take() {
-								let _ = cancel.send(());
-							}
-							app.chat.finish_bang(true);
-							mode = AppMode::Idle;
+							cancel_bang(&mut mode, &mut app, &mut bang_cancel);
 						} else {
 							break;
 						}
@@ -400,6 +469,16 @@ pub async fn run_interactive(
 					// Ctrl+O: toggle tool output expansion.
 					else if data == "\x0f" {
 						app.chat.toggle_tool_expansion();
+					}
+					// Escape — cancel active operation (bypasses editor).
+					else if data == "\x1b"
+						&& matches!(mode, AppMode::Streaming | AppMode::BangRunning)
+					{
+						if matches!(mode, AppMode::Streaming) {
+							cancel_streaming(&mut mode, &mut app, &terminal, &mut agent_generation);
+						} else {
+							cancel_bang(&mut mode, &mut app, &mut bang_cancel);
+						}
 					}
 					// Forward other input to the app (routes through input
 					// listeners then to the editor).
@@ -498,7 +577,8 @@ pub async fn run_interactive(
 								},
 								InputAction::UserMessage(text) => {
 									// If already streaming, interrupt the current agent run
-									// first.
+									// first. The generation increment inside spawn_agent
+									// ensures the old run's events are dropped.
 									if matches!(mode, AppMode::Streaming) {
 										app.chat.finish_streaming();
 									}
@@ -509,6 +589,9 @@ pub async fn run_interactive(
 
 									mode = AppMode::Streaming;
 									app.chat.start_streaming();
+									app.status.clear_work_status();
+									app.status.start_working();
+									app.update_status_border(terminal.columns());
 									spawn_agent(
 										&model,
 										session.messages(),
@@ -517,8 +600,17 @@ pub async fn run_interactive(
 										&settings,
 										&api_key,
 										&tx,
+										&mut agent_generation,
 									);
 								},
+							}
+						} else if data == "\x1b" && matches!(result, InputResult::Ignored) {
+							// Esc in idle — editor didn't consume (no autocomplete).
+							let text = app.editor.get_text();
+							if !text.trim().is_empty() && text.trim_start().starts_with('!') {
+								// Exit bash-mode input.
+								app.editor.set_text("");
+								app.sync_editor_border_color();
 							}
 						}
 					}
@@ -533,9 +625,17 @@ pub async fn run_interactive(
 					app.handle_input(&bracketed);
 				},
 			},
-			Some(AppEvent::Agent(agent_event)) => {
-				match agent_event {
-					AgentEvent::TurnStart { .. } => {},
+			Some(AppEvent::Agent(tagged)) => {
+				// Drop events from old (stale) agent generations.
+				if tagged.generation != agent_generation {
+					continue;
+				}
+				match tagged.event {
+					AgentEvent::TurnStart { .. } => {
+						if matches!(mode, AppMode::Streaming) {
+							app.status.set_working_phase("Thinking");
+						}
+					},
 					AgentEvent::TextDelta(text) => {
 						if matches!(mode, AppMode::Streaming) {
 							app.chat.append_text(&text);
@@ -548,10 +648,12 @@ pub async fn run_interactive(
 					},
 					AgentEvent::ToolCallStart { name, .. } => {
 						if matches!(mode, AppMode::Streaming) {
+							app.status.set_working_phase(&generate_tool_phase(&name));
 							app.chat.set_tool_executing(Some(name));
 						}
 					},
 					AgentEvent::ToolCallResult { .. } => {
+						app.status.set_working_phase("Thinking");
 						app.chat.set_tool_executing(None);
 					},
 					AgentEvent::MessageComplete(message) => {
@@ -581,6 +683,8 @@ pub async fn run_interactive(
 					AgentEvent::Done(outcome) => {
 						mode = AppMode::Idle;
 						app.chat.finish_streaming();
+						app.status.finish_working();
+						app.update_status_border(terminal.columns());
 
 						// Check if auto-compaction should trigger.
 						let maybe_usage = match &outcome {
@@ -732,6 +836,20 @@ fn crossterm_key_to_string(key: &crossterm::event::KeyEvent) -> String {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn test_generate_tool_phase_known_tools() {
+		assert_eq!(generate_tool_phase("read"), "Reading file");
+		assert_eq!(generate_tool_phase("bash"), "Running bash");
+		assert_eq!(generate_tool_phase("grep"), "Searching files");
+		assert_eq!(generate_tool_phase("find"), "Finding files");
+		assert_eq!(generate_tool_phase("glob"), "Finding files");
+	}
+
+	#[test]
+	fn test_generate_tool_phase_unknown() {
+		assert_eq!(generate_tool_phase("custom_tool"), "Running custom_tool");
+	}
 
 	#[test]
 	fn test_crossterm_key_to_string_char() {

@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::cli::Cli;
@@ -150,8 +150,13 @@ pub fn load(cli: &Cli) -> Result<Settings> {
 	}
 
 	// Deserialize the merged TOML into Settings.
-	let mut settings: Settings =
-		merged.try_into().unwrap_or_default();
+	let mut settings: Settings = match merged.try_into() {
+		Ok(s) => s,
+		Err(e) => {
+			eprintln!("Warning: config parse error, using defaults: {e}");
+			Settings::default()
+		},
+	};
 
 	// Resolve API key: CLI → env → legacy config.json
 	settings.api_key = resolve_api_key(cli.api_key.as_deref())?;
@@ -197,7 +202,7 @@ pub fn set(path: &str, value: &str) -> Result<()> {
 	};
 
 	let mut doc = load_toml_value(Some(&config_path));
-	set_dotted(&mut doc, path, value);
+	set_dotted(&mut doc, path, value)?;
 
 	write_toml(&config_path, &doc)
 }
@@ -276,22 +281,27 @@ fn resolve_dotted(value: &toml::Value, path: &str) -> Option<String> {
 }
 
 /// Set a value at a dotted path, creating intermediate tables as needed.
-fn set_dotted(root: &mut toml::Value, path: &str, raw: &str) {
+fn set_dotted(root: &mut toml::Value, path: &str, raw: &str) -> Result<()> {
 	let parts: Vec<&str> = path.split('.').collect();
 	let mut current = root;
 	for &key in &parts[..parts.len() - 1] {
 		if !current.as_table().is_some_and(|t| t.contains_key(key)) {
-			current
+			let tbl = current
 				.as_table_mut()
-				.expect("intermediate must be table")
-				.insert(key.to_owned(), toml::Value::Table(toml::map::Map::new()));
+				.context("intermediate path element is not a table")?;
+			tbl.insert(key.to_owned(), toml::Value::Table(toml::map::Map::new()));
 		}
-		current = current.as_table_mut().unwrap().get_mut(key).unwrap();
+		current = current
+			.as_table_mut()
+			.and_then(|t| t.get_mut(key))
+			.context("failed to traverse config path")?;
 	}
-	let leaf_key = parts.last().expect("path must not be empty");
-	if let Some(tbl) = current.as_table_mut() {
-		tbl.insert((*leaf_key).to_owned(), parse_toml_value(raw));
-	}
+	let leaf_key = parts.last().context("config path must not be empty")?;
+	let tbl = current
+		.as_table_mut()
+		.context("leaf parent is not a table")?;
+	tbl.insert((*leaf_key).to_owned(), parse_toml_value(raw));
+	Ok(())
 }
 
 /// Remove a key at a dotted path.
@@ -449,7 +459,7 @@ mod tests {
 	#[test]
 	fn set_and_remove_dotted() {
 		let mut value = toml::Value::Table(toml::map::Map::new());
-		set_dotted(&mut value, "agent.max_tokens", "16384");
+		set_dotted(&mut value, "agent.max_tokens", "16384").unwrap();
 		assert_eq!(resolve_dotted(&value, "agent.max_tokens"), Some("16384".to_owned()));
 
 		remove_dotted(&mut value, "agent.max_tokens");

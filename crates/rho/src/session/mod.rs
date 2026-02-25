@@ -831,7 +831,8 @@ fn truncate_for_persistence(value: &mut Value, blob_store: Option<&BlobStore>) -
 	match value {
 		Value::String(s) => {
 			if s.len() > MAX_STRING_LENGTH {
-				s.truncate(MAX_STRING_LENGTH);
+				let boundary = s.floor_char_boundary(MAX_STRING_LENGTH);
+				s.truncate(boundary);
 				s.push_str(TRUNCATION_SUFFIX);
 			}
 		},
@@ -1666,6 +1667,28 @@ mod tests {
 			},
 			_ => panic!("Expected Message entry"),
 		}
+	}
+
+	#[test]
+	fn test_truncate_multibyte_at_boundary() {
+		// Build a string that places a multi-byte character right at
+		// MAX_STRING_LENGTH so that a naive byte-offset truncation would
+		// land inside the character and panic.
+		// U+1F600 (😀) is 4 bytes in UTF-8.
+		let prefix = "x".repeat(MAX_STRING_LENGTH - 1);
+		let long_str = format!("{prefix}😀 and more text to exceed the limit");
+		assert!(long_str.len() > MAX_STRING_LENGTH);
+
+		let mut value = serde_json::Value::String(long_str);
+		truncate_for_persistence(&mut value, None).unwrap();
+
+		let s = value.as_str().unwrap();
+		// The emoji straddles the boundary, so floor_char_boundary should
+		// back up to before the emoji.
+		assert!(s.len() <= MAX_STRING_LENGTH + TRUNCATION_SUFFIX.len());
+		assert!(s.ends_with(TRUNCATION_SUFFIX));
+		// Verify the string is valid UTF-8 (would panic above if not).
+		assert!(s.is_char_boundary(s.len()));
 	}
 
 	#[test]

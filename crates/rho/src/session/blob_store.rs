@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+	io::Write,
+	path::{Path, PathBuf},
+};
 
 use anyhow::Result;
 use base64::Engine;
@@ -42,13 +45,25 @@ impl BlobStore {
 
 	/// Write binary data to the blob store.
 	/// Returns the SHA-256 hash and file path. Idempotent.
+	///
+	/// Writes are atomic: data goes to a temp file first, then is renamed
+	/// into place. This prevents a crash mid-write from leaving a partial
+	/// file that `has()` would incorrectly report as valid.
 	pub fn put(&self, data: &[u8]) -> Result<BlobRef> {
 		let hash = hex_sha256(data);
 		let blob_path = self.dir.join(&hash);
 
-		// Ensure the directory exists before writing.
+		if blob_path.exists() {
+			// Already stored (content-addressed, so hash match = content match).
+			return Ok(BlobRef { hash, path: blob_path });
+		}
+
 		std::fs::create_dir_all(&self.dir)?;
-		std::fs::write(&blob_path, data)?;
+
+		// Write to a temp file in the same directory, then atomically rename.
+		let mut tmp = tempfile::NamedTempFile::new_in(&self.dir)?;
+		tmp.write_all(data)?;
+		tmp.persist(&blob_path)?;
 
 		Ok(BlobRef { hash, path: blob_path })
 	}
