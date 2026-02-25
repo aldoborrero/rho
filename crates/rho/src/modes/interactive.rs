@@ -66,9 +66,13 @@ fn cancel_streaming(
 	app: &mut tui::App,
 	terminal: &impl Terminal,
 	agent_generation: &mut u64,
+	agent_cancel: &mut Option<tokio_util::sync::CancellationToken>,
 ) {
 	*mode = AppMode::Idle;
 	*agent_generation += 1;
+	if let Some(token) = agent_cancel.take() {
+		token.cancel();
+	}
 	app.chat.finish_streaming();
 	app.status.finish_working();
 	app.update_status_border(terminal.columns());
@@ -114,9 +118,10 @@ fn spawn_agent(
 	api_key: &str,
 	tx: &tokio::sync::mpsc::Sender<AppEvent>,
 	agent_generation: &mut u64,
-) {
+) -> tokio_util::sync::CancellationToken {
 	*agent_generation += 1;
 	let generation = *agent_generation;
+	let cancel = tokio_util::sync::CancellationToken::new();
 
 	let (agent_tx, mut agent_rx) = tokio::sync::mpsc::channel::<AgentEvent>(64);
 
@@ -150,6 +155,7 @@ fn spawn_agent(
 		cwd:           std::env::current_dir().unwrap_or_default(),
 		api_key:       Some(api_key.to_owned()),
 		temperature:   Some(settings.agent.temperature),
+		abort:         Some(cancel.clone()),
 	};
 	let mut agent_messages = messages.to_vec();
 	tokio::spawn(async move {
@@ -162,6 +168,8 @@ fn spawn_agent(
 		)
 		.await;
 	});
+
+	cancel
 }
 
 // ---------------------------------------------------------------------------
@@ -402,6 +410,8 @@ pub async fn run_interactive(
 	// Generation counter: incremented on every agent spawn and cancel.
 	// Events from old generations are silently dropped.
 	let mut agent_generation: u64 = 0;
+	// Cancellation token for the currently running agent loop.
+	let mut agent_cancel: Option<tokio_util::sync::CancellationToken> = None;
 	// Cancellation handle for the currently running bang command.
 	let mut bang_cancel: Option<tokio::sync::oneshot::Sender<()>> = None;
 
@@ -416,7 +426,7 @@ pub async fn run_interactive(
 		app.status.clear_work_status();
 		app.status.start_working();
 		app.update_status_border(terminal.columns());
-		spawn_agent(&model, session.messages(), &tools, &system_prompt, &settings, &api_key, &tx, &mut agent_generation);
+		agent_cancel = Some(spawn_agent(&model, session.messages(), &tools, &system_prompt, &settings, &api_key, &tx, &mut agent_generation));
 	}
 
 	// Perform the initial render.
@@ -451,7 +461,7 @@ pub async fn run_interactive(
 					// Ctrl+C
 					if data == "\x03" {
 						if matches!(mode, AppMode::Streaming) {
-							cancel_streaming(&mut mode, &mut app, &terminal, &mut agent_generation);
+							cancel_streaming(&mut mode, &mut app, &terminal, &mut agent_generation, &mut agent_cancel);
 						} else if matches!(mode, AppMode::BangRunning) {
 							cancel_bang(&mut mode, &mut app, &mut bang_cancel);
 						} else {
@@ -475,7 +485,7 @@ pub async fn run_interactive(
 						&& matches!(mode, AppMode::Streaming | AppMode::BangRunning)
 					{
 						if matches!(mode, AppMode::Streaming) {
-							cancel_streaming(&mut mode, &mut app, &terminal, &mut agent_generation);
+							cancel_streaming(&mut mode, &mut app, &terminal, &mut agent_generation, &mut agent_cancel);
 						} else {
 							cancel_bang(&mut mode, &mut app, &mut bang_cancel);
 						}
@@ -580,6 +590,9 @@ pub async fn run_interactive(
 									// first. The generation increment inside spawn_agent
 									// ensures the old run's events are dropped.
 									if matches!(mode, AppMode::Streaming) {
+										if let Some(token) = agent_cancel.take() {
+											token.cancel();
+										}
 										app.chat.finish_streaming();
 									}
 
@@ -592,7 +605,7 @@ pub async fn run_interactive(
 									app.status.clear_work_status();
 									app.status.start_working();
 									app.update_status_border(terminal.columns());
-									spawn_agent(
+									agent_cancel = Some(spawn_agent(
 										&model,
 										session.messages(),
 										&tools,
@@ -601,7 +614,7 @@ pub async fn run_interactive(
 										&api_key,
 										&tx,
 										&mut agent_generation,
-									);
+									));
 								},
 							}
 						} else if data == "\x1b" && matches!(result, InputResult::Ignored) {
@@ -682,16 +695,17 @@ pub async fn run_interactive(
 					},
 					AgentEvent::Done(outcome) => {
 						mode = AppMode::Idle;
+						agent_cancel = None;
 						app.chat.finish_streaming();
 						app.status.finish_working();
 						app.update_status_border(terminal.columns());
 
-						// Check if auto-compaction should trigger.
+						// Auto-compaction only for non-cancelled outcomes.
 						let maybe_usage = match &outcome {
 							AgentOutcome::Stop { usage } | AgentOutcome::MaxTokens { usage } => {
 								usage.as_ref()
 							},
-							_ => None,
+							_ => None, // Cancelled, Failed -> no usage
 						};
 						if let Some(usage) = maybe_usage {
 							let context_tokens = usage.input_tokens
@@ -736,6 +750,7 @@ pub async fn run_interactive(
 						}
 
 						match outcome {
+							AgentOutcome::Cancelled => {}, // Clean exit
 							AgentOutcome::MaxTokens { .. } => {
 								show_chat_message(
 									&mut app,
