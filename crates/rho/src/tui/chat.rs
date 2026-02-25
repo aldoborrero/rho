@@ -259,13 +259,18 @@ impl ChatComponent {
 	}
 
 	fn render_user_message(&self, msg: &UserMessage, width: u16) -> Vec<String> {
+		let w = width as usize;
 		let mut lines = Vec::new();
 		lines.push(String::new()); // blank separator
+
+		// Top padding line with background.
+		lines.push(self.theme.bg(ThemeBg::UserMessageBg, &" ".repeat(w)));
+
 		for line in msg.content.lines() {
-			let styled = self.theme.fg(ThemeColor::UserMessageText, line);
-			// Pad to full width so background covers the entire line
+			// 1-space left margin inside the background.
+			let styled = format!(" {}", self.theme.fg(ThemeColor::UserMessageText, line));
 			let vis_len = rho_text::width::visible_width_str(&styled);
-			let padding = (width as usize).saturating_sub(vis_len);
+			let padding = w.saturating_sub(vis_len);
 			let padded = if padding > 0 {
 				format!("{styled}{}", " ".repeat(padding))
 			} else {
@@ -273,6 +278,9 @@ impl ChatComponent {
 			};
 			lines.push(self.theme.bg(ThemeBg::UserMessageBg, &padded));
 		}
+
+		// Bottom padding line with background.
+		lines.push(self.theme.bg(ThemeBg::UserMessageBg, &" ".repeat(w)));
 		lines
 	}
 
