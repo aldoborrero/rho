@@ -29,6 +29,7 @@ sha2 = "0.10"
 rand = "0.9"
 base64 = "0.22"
 minijinja = { version = "2", features = ["builtins"] }
+toml = "0.8"
 
 [dev-dependencies]
 tempfile = "3"

@@ -27,6 +27,10 @@ pub struct AgentConfig {
 	pub thinking:      ThinkingLevel,
 	pub retry:         rho_ai::RetryConfig,
 	pub cwd:           PathBuf,
+	/// API key override (passed through to `StreamOptions`).
+	pub api_key:       Option<String>,
+	/// Temperature override. `None` or negative = provider default.
+	pub temperature:   Option<f32>,
 }
 
 /// Run the autonomous agent loop.
@@ -65,9 +69,14 @@ pub async fn run_agent_loop(
 			tools:         ai_tools,
 		};
 
+		let temperature = config
+			.temperature
+			.filter(|&t| t >= 0.0);
 		let options = rho_ai::types::StreamOptions {
+			api_key: config.api_key.clone(),
 			max_tokens: Some(max_tokens_for(config.thinking, config.max_tokens)),
 			reasoning: thinking_to_reasoning(config.thinking),
+			temperature,
 			retry: config.retry.clone(),
 			..Default::default()
 		};

@@ -17,7 +17,7 @@ pub enum Api {
 // ---------------------------------------------------------------------------
 
 /// Per-million-token pricing for a model.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ModelCost {
 	pub input_per_mtok:       f64,
 	pub output_per_mtok:      f64,
