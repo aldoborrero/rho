@@ -163,6 +163,33 @@ impl ChatComponent {
 		self.tool_executing = None;
 	}
 
+	/// Commit any accumulated streaming text as a partial assistant message.
+	///
+	/// Called on cancel so the user can still see what was generated before
+	/// the interruption. Returns the committed message (if any) so the
+	/// caller can persist it to the session.
+	pub fn commit_partial_streaming(&mut self) -> Option<AssistantMessage> {
+		if self.streaming_text.is_empty() && self.streaming_thinking.is_empty() {
+			return None;
+		}
+
+		let mut content = Vec::new();
+		if !self.streaming_thinking.is_empty() {
+			content.push(ContentBlock::Thinking {
+				thinking: std::mem::take(&mut self.streaming_thinking),
+			});
+		}
+		if !self.streaming_text.is_empty() {
+			content.push(ContentBlock::Text {
+				text: std::mem::take(&mut self.streaming_text),
+			});
+		}
+
+		let message = AssistantMessage { content, stop_reason: None, usage: None };
+		self.items.push(ChatItem::Message(Message::Assistant(message.clone())));
+		Some(message)
+	}
+
 	pub fn clear(&mut self) {
 		self.items.clear();
 		self.streaming_text.clear();

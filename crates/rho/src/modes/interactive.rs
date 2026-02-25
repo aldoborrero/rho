@@ -67,15 +67,17 @@ fn cancel_streaming(
 	terminal: &impl Terminal,
 	agent_generation: &mut u64,
 	agent_cancel: &mut Option<tokio_util::sync::CancellationToken>,
-) {
+) -> Option<crate::ai::types::AssistantMessage> {
 	*mode = AppMode::Idle;
 	*agent_generation += 1;
 	if let Some(token) = agent_cancel.take() {
 		token.cancel();
 	}
+	let partial = app.chat.commit_partial_streaming();
 	app.chat.finish_streaming();
 	app.status.finish_working();
 	app.update_status_border(terminal.columns());
+	partial
 }
 
 /// Cancel the running bang command and reset UI state.
@@ -461,7 +463,9 @@ pub async fn run_interactive(
 					// Ctrl+C
 					if data == "\x03" {
 						if matches!(mode, AppMode::Streaming) {
-							cancel_streaming(&mut mode, &mut app, &terminal, &mut agent_generation, &mut agent_cancel);
+							if let Some(partial) = cancel_streaming(&mut mode, &mut app, &terminal, &mut agent_generation, &mut agent_cancel) {
+								session.append(Message::Assistant(partial)).await?;
+							}
 						} else if matches!(mode, AppMode::BangRunning) {
 							cancel_bang(&mut mode, &mut app, &mut bang_cancel);
 						} else {
@@ -485,7 +489,9 @@ pub async fn run_interactive(
 						&& matches!(mode, AppMode::Streaming | AppMode::BangRunning)
 					{
 						if matches!(mode, AppMode::Streaming) {
-							cancel_streaming(&mut mode, &mut app, &terminal, &mut agent_generation, &mut agent_cancel);
+							if let Some(partial) = cancel_streaming(&mut mode, &mut app, &terminal, &mut agent_generation, &mut agent_cancel) {
+								session.append(Message::Assistant(partial)).await?;
+							}
 						} else {
 							cancel_bang(&mut mode, &mut app, &mut bang_cancel);
 						}
@@ -592,6 +598,9 @@ pub async fn run_interactive(
 									if matches!(mode, AppMode::Streaming) {
 										if let Some(token) = agent_cancel.take() {
 											token.cancel();
+										}
+										if let Some(partial) = app.chat.commit_partial_streaming() {
+											session.append(Message::Assistant(partial)).await?;
 										}
 										app.chat.finish_streaming();
 									}
