@@ -18,7 +18,7 @@ pub use keybindings::{EditorAction, EditorKeybindingsManager, get_editor_keybind
 pub use kill_ring::KillRing;
 pub use overlay::{OverlayAnchor, OverlayOptions, SizeValue};
 pub use stdin_buffer::{StdinBuffer, StdinEvent};
-pub use symbols::{BoxSymbols, RoundedBoxSymbols, SymbolTheme};
+pub use symbols::{BoxSymbols, RoundedBoxSymbols, SymbolTheme, TreeSymbols};
 pub use terminal::{CrosstermTerminal, Terminal, TerminalEvent, emergency_terminal_restore};
 pub use theme::{ColorMode, ColorValue, Theme, ThemeBg, ThemeColor};
 pub use tui::{InputListener, OverlayHandle, Tui, is_key_release};

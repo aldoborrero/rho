@@ -591,6 +591,11 @@ mod tests {
 				tee_right:    "├",
 				cross:        "┼",
 			},
+			tree:           crate::symbols::TreeSymbols {
+				branch:   "├─",
+				last:     "╰─",
+				vertical: "│",
+			},
 			quote_border:   "│",
 			hr_char:        "─",
 			spinner_frames: &["⠋"],

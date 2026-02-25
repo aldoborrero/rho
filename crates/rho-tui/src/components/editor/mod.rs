@@ -1596,6 +1596,11 @@ mod tests {
 				tee_right:    "├",
 				cross:        "┼",
 			},
+			tree:           symbols::TreeSymbols {
+				branch:   "├─",
+				last:     "╰─",
+				vertical: "│",
+			},
 			quote_border:   "│",
 			hr_char:        "─",
 			spinner_frames: &["⠋"],

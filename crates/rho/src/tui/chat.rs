@@ -17,7 +17,8 @@ use rho_tui::{
 use crate::{
 	ai::types::{AssistantMessage, ContentBlock, Message, ToolResultMessage, UserMessage},
 	tui::tool_renderers::{
-		ToolResultDisplay, collapse_lines, get_tool_renderer, make_bg_style, make_border_style,
+		ReadGroupEntry, ToolResultDisplay, collapse_lines, get_tool_renderer, make_bg_style,
+		make_border_style, render_read_group,
 	},
 };
 
@@ -217,6 +218,12 @@ impl ChatComponent {
 		None
 	}
 
+	/// Look up the tool name for a given `tool_use_id`.
+	fn tool_name_for_id(&self, tool_use_id: &str) -> Option<String> {
+		self.find_tool_use_data(tool_use_id)
+			.map(|(name, _)| name.to_owned())
+	}
+
 	/// Check whether a `ToolResult` message exists for the given `tool_use_id`.
 	fn has_tool_result(&self, tool_use_id: &str) -> bool {
 		self.items.iter().any(|item| {
@@ -254,23 +261,47 @@ impl ChatComponent {
 					lines.extend(rendered);
 				},
 				ContentBlock::Thinking { thinking } => {
-					let label = self
-						.theme
-						.fg(ThemeColor::ThinkingText, &self.theme.italic("[thinking]"));
-					lines.push(format!("  {label}"));
 					let thinking_lines: Vec<&str> = thinking.lines().collect();
-					for line in thinking_lines.iter().take(5) {
-						let styled = self
-							.theme
-							.fg(ThemeColor::ThinkingText, &self.theme.italic(line));
-						lines.push(format!("  {styled}"));
-					}
-					if thinking_lines.len() > 5 {
-						let more = format!("... ({} more lines)", thinking_lines.len() - 5);
-						let styled = self
-							.theme
-							.fg(ThemeColor::ThinkingText, &self.theme.italic(&more));
-						lines.push(format!("  {styled}"));
+					let line_count = thinking_lines.len();
+					if self.tools_expanded {
+						// Expanded: show all thinking lines.
+						let expand_label = self.theme.fg(
+							ThemeColor::ThinkingText,
+							&self.theme.italic(&format!(
+								"\u{25be} Thinking ({line_count} line{})",
+								if line_count == 1 { "" } else { "s" }
+							)),
+						);
+						lines.push(format!("  {expand_label}"));
+						for line in &thinking_lines {
+							let styled = self
+								.theme
+								.fg(ThemeColor::ThinkingText, &self.theme.italic(line));
+							lines.push(format!("  {styled}"));
+						}
+					} else {
+						// Collapsed: header + first 5 lines + truncation.
+						let collapse_label = self.theme.fg(
+							ThemeColor::ThinkingText,
+							&self.theme.italic(&format!(
+								"\u{25b8} Thinking ({line_count} line{})",
+								if line_count == 1 { "" } else { "s" }
+							)),
+						);
+						lines.push(format!("  {collapse_label}"));
+						for line in thinking_lines.iter().take(5) {
+							let styled = self
+								.theme
+								.fg(ThemeColor::ThinkingText, &self.theme.italic(line));
+							lines.push(format!("  {styled}"));
+						}
+						if line_count > 5 {
+							let more = format!("\u{2026} ({} more lines)", line_count - 5);
+							let styled = self
+								.theme
+								.fg(ThemeColor::ThinkingText, &self.theme.italic(&more));
+							lines.push(format!("  {styled}"));
+						}
 					}
 				},
 				ContentBlock::ToolUse { id, name, input } => {
@@ -398,6 +429,39 @@ impl ChatComponent {
 		lines.extend(self.loader.render(width));
 		lines
 	}
+
+	/// Check whether item at index `i` is a Read tool result.
+	fn is_read_tool_result(&self, i: usize) -> bool {
+		matches!(&self.items[i], ChatItem::Message(Message::ToolResult(t))
+			if self.tool_name_for_id(&t.tool_use_id).as_deref() == Some("Read")
+				|| self.tool_name_for_id(&t.tool_use_id).as_deref() == Some("read"))
+	}
+
+	/// Collect consecutive Read tool results starting at index `start`.
+	/// Returns the group entries and the count of items consumed.
+	fn collect_read_group(&self, start: usize) -> (Vec<ReadGroupEntry>, usize) {
+		let mut entries = Vec::new();
+		let mut i = start;
+		while i < self.items.len() && self.is_read_tool_result(i) {
+			if let ChatItem::Message(Message::ToolResult(t)) = &self.items[i] {
+				let file_path = self
+					.find_tool_use_data(&t.tool_use_id)
+					.map_or_else(
+						|| "unknown".to_owned(),
+						|(_, args)| {
+							args.get("path")
+								.or_else(|| args.get("file_path"))
+								.and_then(serde_json::Value::as_str)
+								.unwrap_or("unknown")
+								.to_owned()
+						},
+					);
+				entries.push(ReadGroupEntry { file_path, is_error: t.is_error });
+			}
+			i += 1;
+		}
+		(entries, i - start)
+	}
 }
 
 impl Component for ChatComponent {
@@ -408,19 +472,42 @@ impl Component for ChatComponent {
 		// We need to iterate over items but render_tool_result needs &mut self for
 		// cache.
 		let item_count = self.items.len();
-		for i in 0..item_count {
+		let mut i = 0;
+		while i < item_count {
 			match &self.items[i] {
 				ChatItem::Message(Message::User(u)) => {
 					let u = u.clone();
 					lines.extend(self.render_user_message(&u, width));
+					i += 1;
 				},
 				ChatItem::Message(Message::Assistant(a)) => {
 					let a = a.clone();
 					lines.extend(self.render_assistant_message(&a, width));
+					i += 1;
 				},
-				ChatItem::Message(Message::ToolResult(t)) => {
-					let t = t.clone();
+				ChatItem::Message(Message::ToolResult(_)) => {
+					// Check for consecutive Read results to group them.
+					if self.is_read_tool_result(i) {
+						let (entries, count) = self.collect_read_group(i);
+						if entries.len() >= 2 {
+							// Render as a grouped tree.
+							lines.extend(render_read_group(
+								&entries,
+								&self.symbols.tree,
+								&self.theme,
+							));
+							i += count;
+							continue;
+						}
+					}
+					// Single tool result (or non-Read) — render normally.
+					let t = if let ChatItem::Message(Message::ToolResult(t)) = &self.items[i] {
+						t.clone()
+					} else {
+						unreachable!()
+					};
 					lines.extend(self.render_tool_result(&t, width));
+					i += 1;
 				},
 				ChatItem::Bang(bang) => {
 					// BangOutput doesn't need &mut self, just render directly.
@@ -434,6 +521,7 @@ impl Component for ChatComponent {
 						width,
 					);
 					lines.extend(bang_lines);
+					i += 1;
 				},
 			}
 		}
@@ -530,6 +618,11 @@ mod tests {
 				tee_left:     "\u{2524}",
 				tee_right:    "\u{251c}",
 				cross:        "\u{253c}",
+			},
+			tree:           rho_tui::symbols::TreeSymbols {
+				branch:   "\u{251c}\u{2500}",
+				last:     "\u{2570}\u{2500}",
+				vertical: "\u{2502}",
 			},
 			quote_border:   "\u{2502}",
 			hr_char:        "\u{2500}",
@@ -898,5 +991,152 @@ mod tests {
 		}));
 		assert!(chat.has_tool_result("tu_1"), "result exists");
 		assert!(!chat.has_tool_result("tu_2"), "different id has no result");
+	}
+
+	// ── Read grouping ─────────────────────────────────────────────
+
+	#[test]
+	fn test_consecutive_reads_grouped() {
+		let mut chat = ChatComponent::new(test_theme(), test_symbols());
+		// Simulate parallel reads: single AssistantMessage with multiple ToolUse,
+		// followed by consecutive ToolResult messages.
+		chat.add_message(Message::Assistant(AssistantMessage {
+			content:     vec![
+				ContentBlock::ToolUse {
+					id:    "tu_r0".to_owned(),
+					name:  "read".to_owned(),
+					input: serde_json::json!({ "path": "src/a.rs" }),
+				},
+				ContentBlock::ToolUse {
+					id:    "tu_r1".to_owned(),
+					name:  "read".to_owned(),
+					input: serde_json::json!({ "path": "src/b.rs" }),
+				},
+				ContentBlock::ToolUse {
+					id:    "tu_r2".to_owned(),
+					name:  "read".to_owned(),
+					input: serde_json::json!({ "path": "src/c.rs" }),
+				},
+			],
+			stop_reason: None,
+			usage:       None,
+		}));
+		for (i, _file) in ["src/a.rs", "src/b.rs", "src/c.rs"].iter().enumerate() {
+			chat.add_message(Message::ToolResult(ToolResultMessage {
+				tool_use_id: format!("tu_r{i}"),
+				content:     "ok".to_owned(),
+				is_error:    false,
+			}));
+		}
+		let lines = chat.render(80);
+		// Should contain "Read (3)" header from grouped rendering.
+		assert!(
+			lines.iter().any(|l| l.contains("Read (3)")),
+			"consecutive reads should be grouped with count header",
+		);
+		// Should contain tree connectors.
+		assert!(
+			lines.iter().any(|l| l.contains("\u{251c}\u{2500}")),
+			"grouped reads should use branch connector",
+		);
+		assert!(
+			lines.iter().any(|l| l.contains("\u{2570}\u{2500}")),
+			"grouped reads should use last connector",
+		);
+	}
+
+	#[test]
+	fn test_single_read_not_grouped() {
+		let mut chat = ChatComponent::new(test_theme(), test_symbols());
+		add_tool_use(&mut chat, "tu_r0", "read", serde_json::json!({ "path": "foo.rs" }));
+		chat.add_message(Message::ToolResult(ToolResultMessage {
+			tool_use_id: "tu_r0".to_owned(),
+			content:     "ok".to_owned(),
+			is_error:    false,
+		}));
+		let lines = chat.render(80);
+		// Single read should NOT be grouped.
+		assert!(
+			!lines.iter().any(|l| l.contains("Read (1)")),
+			"single read should not be grouped",
+		);
+		// Should still show the file path from render_combined.
+		assert!(
+			lines.iter().any(|l| l.contains("foo.rs")),
+			"single read should show file path",
+		);
+	}
+
+	// ── Thinking block ────────────────────────────────────────────
+
+	#[test]
+	fn test_thinking_collapsed_shows_line_count() {
+		let mut chat = ChatComponent::new(test_theme(), test_symbols());
+		let thinking = (0..10).map(|i| format!("thought {i}")).collect::<Vec<_>>().join("\n");
+		chat.add_message(Message::Assistant(AssistantMessage {
+			content:     vec![ContentBlock::Thinking { thinking }],
+			stop_reason: None,
+			usage:       None,
+		}));
+		let lines = chat.render(80);
+		assert!(
+			lines.iter().any(|l| l.contains("Thinking (10 lines)")),
+			"collapsed thinking should show line count",
+		);
+		// Should show the collapsed indicator (▸).
+		assert!(
+			lines.iter().any(|l| l.contains("\u{25b8}")),
+			"collapsed thinking should show right-pointing triangle",
+		);
+	}
+
+	#[test]
+	fn test_thinking_expanded_shows_all() {
+		let mut chat = ChatComponent::new(test_theme(), test_symbols());
+		let thinking = (0..10).map(|i| format!("thought {i}")).collect::<Vec<_>>().join("\n");
+		chat.add_message(Message::Assistant(AssistantMessage {
+			content:     vec![ContentBlock::Thinking { thinking }],
+			stop_reason: None,
+			usage:       None,
+		}));
+		chat.toggle_tool_expansion(); // expand
+		let lines = chat.render(80);
+		// Should show the expanded indicator (▾).
+		assert!(
+			lines.iter().any(|l| l.contains("\u{25be}")),
+			"expanded thinking should show down-pointing triangle",
+		);
+		// Should show all 10 lines (not truncated).
+		assert!(
+			lines.iter().any(|l| l.contains("thought 9")),
+			"expanded thinking should show last line",
+		);
+		// Should NOT show the truncation indicator.
+		assert!(
+			!lines.iter().any(|l| l.contains("more lines")),
+			"expanded thinking should not show truncation",
+		);
+	}
+
+	#[test]
+	fn test_thinking_collapsed_truncates() {
+		let mut chat = ChatComponent::new(test_theme(), test_symbols());
+		let thinking = (0..20).map(|i| format!("thought {i}")).collect::<Vec<_>>().join("\n");
+		chat.add_message(Message::Assistant(AssistantMessage {
+			content:     vec![ContentBlock::Thinking { thinking }],
+			stop_reason: None,
+			usage:       None,
+		}));
+		let lines = chat.render(80);
+		// Collapsed: shows first 5 lines + truncation.
+		assert!(
+			lines.iter().any(|l| l.contains("15 more lines")),
+			"collapsed thinking with 20 lines should show '15 more lines'",
+		);
+		// Should NOT show the last thought.
+		assert!(
+			!lines.iter().any(|l| l.contains("thought 19")),
+			"collapsed thinking should not show all lines",
+		);
 	}
 }

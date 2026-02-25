@@ -27,6 +27,14 @@ pub struct RoundedBoxSymbols {
 	pub vertical:     &'static str,
 }
 
+/// Tree drawing characters for hierarchical displays.
+#[derive(Debug, Clone)]
+pub struct TreeSymbols {
+	pub branch:   &'static str,
+	pub last:     &'static str,
+	pub vertical: &'static str,
+}
+
 /// Complete symbol theme for the TUI.
 #[derive(Debug, Clone)]
 pub struct SymbolTheme {
@@ -35,6 +43,7 @@ pub struct SymbolTheme {
 	pub box_round:      RoundedBoxSymbols,
 	pub box_sharp:      BoxSymbols,
 	pub table:          BoxSymbols,
+	pub tree:           TreeSymbols,
 	pub quote_border:   &'static str,
 	pub hr_char:        &'static str,
 	pub spinner_frames: &'static [&'static str],

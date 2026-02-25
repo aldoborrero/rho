@@ -8,6 +8,7 @@ use rho_tui::{
 	components::output_block::{
 		OutputBlockOptions, OutputBlockState, OutputSection, render_output_block,
 	},
+	symbols::TreeSymbols,
 	theme::{Theme, ThemeBg, ThemeColor},
 };
 use serde_json::Value;
@@ -94,6 +95,15 @@ pub(crate) fn collapse_lines(lines: &[&str], max: usize, theme: &Theme) -> Vec<S
 /// Extract a string field from JSON args, returning a default if absent.
 fn arg_str<'a>(args: &'a Value, field: &str) -> &'a str {
 	args.get(field).and_then(Value::as_str).unwrap_or("")
+}
+
+/// Extract the file path from Read tool args (checks both `"path"` and
+/// `"file_path"` for compatibility).
+fn read_path<'a>(args: &'a Value) -> &'a str {
+	args.get("path")
+		.or_else(|| args.get("file_path"))
+		.and_then(Value::as_str)
+		.unwrap_or("")
 }
 
 /// Render a standard bordered result block (shared by all non-inline
@@ -256,7 +266,7 @@ pub struct ReadRenderer;
 
 impl ToolRenderer for ReadRenderer {
 	fn render_call(&self, args: &Value, theme: &Theme, _width: u16) -> Vec<String> {
-		let file = arg_str(args, "file_path");
+		let file = read_path(args);
 		let text = theme.fg(ThemeColor::Dim, &format!("\u{2022} Read {file}"));
 		vec![format!("  {text}")]
 	}
@@ -281,6 +291,61 @@ impl ToolRenderer for ReadRenderer {
 		let text = theme.fg(ThemeColor::Dim, label);
 		vec![format!("  {icon} {text}")]
 	}
+
+	fn render_combined(
+		&self,
+		args: &Value,
+		result: &ToolResultDisplay,
+		_expanded: bool,
+		theme: &Theme,
+		_width: u16,
+	) -> Vec<String> {
+		let file = read_path(args);
+		let icon = if result.is_error {
+			theme.fg(ThemeColor::Error, "\u{2718}")
+		} else {
+			theme.fg(ThemeColor::Success, "\u{2714}")
+		};
+		let path_display = theme.fg(ThemeColor::Dim, file);
+		vec![format!("  {icon} {path_display}")]
+	}
+}
+
+/// A single entry in a Read group.
+pub struct ReadGroupEntry {
+	pub file_path: String,
+	pub is_error:  bool,
+}
+
+/// Render a group of consecutive Read tool results as a tree.
+///
+/// Produces output like:
+/// ```text
+///   • Read (3)
+///     ├─ ✔ src/main.rs
+///     ├─ ✔ src/lib.rs
+///     └─ ✔ Cargo.toml
+/// ```
+pub fn render_read_group(
+	entries: &[ReadGroupEntry],
+	tree: &TreeSymbols,
+	theme: &Theme,
+) -> Vec<String> {
+	let mut lines = Vec::with_capacity(entries.len() + 1);
+	let header = theme.fg(ThemeColor::Dim, &format!("\u{2022} Read ({})", entries.len()));
+	lines.push(format!("  {header}"));
+	for (i, entry) in entries.iter().enumerate() {
+		let connector = if i == entries.len() - 1 { tree.last } else { tree.branch };
+		let connector_styled = theme.fg(ThemeColor::Dim, connector);
+		let icon = if entry.is_error {
+			theme.fg(ThemeColor::Error, "\u{2718}")
+		} else {
+			theme.fg(ThemeColor::Success, "\u{2714}")
+		};
+		let path_display = theme.fg(ThemeColor::Dim, &entry.file_path);
+		lines.push(format!("    {connector_styled} {icon} {path_display}"));
+	}
+	lines
 }
 
 // ── WriteRenderer ───────────────────────────────────────────────────────
@@ -642,10 +707,11 @@ mod tests {
 	#[test]
 	fn read_render_call_non_empty() {
 		let theme = test_theme();
-		let args = serde_json::json!({ "file_path": "src/main.rs" });
+		let args = serde_json::json!({ "path": "src/main.rs" });
 		let lines = ReadRenderer.render_call(&args, &theme, 80);
 		assert!(!lines.is_empty(), "ReadRenderer::render_call should produce output");
 		assert!(lines.iter().any(|l| l.contains("Read")), "output should mention Read",);
+		assert!(lines.iter().any(|l| l.contains("src/main.rs")), "output should show file path",);
 	}
 
 	#[test]
@@ -933,13 +999,37 @@ mod tests {
 	}
 
 	#[test]
-	fn read_render_combined_delegates_to_render_result() {
+	fn read_render_combined_shows_file_path() {
 		let theme = test_theme();
-		let args = serde_json::json!({ "file_path": "src/main.rs" });
+		let args = serde_json::json!({ "path": "src/main.rs" });
 		let result = success_result();
 		let combined = ReadRenderer.render_combined(&args, &result, false, &theme, 80);
-		let plain = ReadRenderer.render_result(&result, false, &theme, 80);
-		assert_eq!(combined, plain, "Read render_combined should delegate to render_result");
+		assert_eq!(combined.len(), 1, "combined should be a single line");
+		assert!(
+			combined[0].contains("src/main.rs"),
+			"combined should include file path, got: {:?}",
+			combined[0],
+		);
+		assert!(
+			combined[0].contains('\u{2714}'),
+			"combined should include check mark for success",
+		);
+	}
+
+	#[test]
+	fn read_render_combined_error_shows_cross() {
+		let theme = test_theme();
+		let args = serde_json::json!({ "path": "missing.rs" });
+		let result = error_result();
+		let combined = ReadRenderer.render_combined(&args, &result, false, &theme, 80);
+		assert!(
+			combined[0].contains('\u{2718}'),
+			"combined error should include cross mark",
+		);
+		assert!(
+			combined[0].contains("missing.rs"),
+			"combined error should include file path",
+		);
 	}
 
 	#[test]
@@ -965,5 +1055,50 @@ mod tests {
 		// Count bottom borders (╰) — should be exactly 1
 		let bottom_borders = lines.iter().filter(|l| l.contains('\u{2570}')).count();
 		assert_eq!(bottom_borders, 1, "combined block should have exactly one bottom border");
+	}
+
+	// ── Read group rendering ──────────────────────────────────────
+
+	fn test_tree() -> TreeSymbols {
+		TreeSymbols { branch: "├─", last: "╰─", vertical: "│" }
+	}
+
+	#[test]
+	fn read_group_renders_tree_structure() {
+		let theme = test_theme();
+		let entries = vec![
+			ReadGroupEntry { file_path: "src/main.rs".to_owned(), is_error: false },
+			ReadGroupEntry { file_path: "src/lib.rs".to_owned(), is_error: false },
+			ReadGroupEntry { file_path: "Cargo.toml".to_owned(), is_error: false },
+		];
+		let lines = render_read_group(&entries, &test_tree(), &theme);
+		assert_eq!(lines.len(), 4, "header + 3 entries");
+		assert!(lines[0].contains("Read (3)"), "header should show count");
+		assert!(lines[1].contains("├─"), "intermediate entry should use branch");
+		assert!(lines[1].contains("src/main.rs"), "first entry should show file path");
+		assert!(lines[3].contains("╰─"), "last entry should use last connector");
+		assert!(lines[3].contains("Cargo.toml"), "last entry should show file path");
+	}
+
+	#[test]
+	fn read_group_single_entry() {
+		let theme = test_theme();
+		let entries = vec![ReadGroupEntry { file_path: "file.rs".to_owned(), is_error: false }];
+		let lines = render_read_group(&entries, &test_tree(), &theme);
+		assert_eq!(lines.len(), 2, "header + 1 entry");
+		assert!(lines[0].contains("Read (1)"), "header should show count");
+		assert!(lines[1].contains("╰─"), "single entry should use last connector");
+	}
+
+	#[test]
+	fn read_group_with_error() {
+		let theme = test_theme();
+		let entries = vec![
+			ReadGroupEntry { file_path: "good.rs".to_owned(), is_error: false },
+			ReadGroupEntry { file_path: "bad.rs".to_owned(), is_error: true },
+		];
+		let lines = render_read_group(&entries, &test_tree(), &theme);
+		assert!(lines[1].contains('\u{2714}'), "success entry should have check mark");
+		assert!(lines[2].contains('\u{2718}'), "error entry should have cross mark");
 	}
 }

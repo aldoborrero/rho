@@ -1513,6 +1513,11 @@ const fn default_symbols() -> SymbolTheme {
 			tee_right:    "├",
 			cross:        "┼",
 		},
+		tree:          crate::symbols::TreeSymbols {
+			branch:   "├─",
+			last:     "╰─",
+			vertical: "│",
+		},
 		quote_border:   "│",
 		hr_char:        "─",
 		spinner_frames: &["⠋"],
