@@ -75,13 +75,11 @@ struct ShellRunConfig {
 /// Options for running a shell command.
 pub struct ShellRunOptions {
 	/// Command string to execute in the shell.
-	pub command:    String,
+	pub command: String,
 	/// Working directory for the command.
-	pub cwd:        Option<String>,
+	pub cwd:     Option<String>,
 	/// Environment variables to apply for this command only.
-	pub env:        Option<HashMap<String, String>>,
-	/// Timeout in milliseconds before cancelling the command.
-	pub timeout_ms: Option<u32>,
+	pub env:     Option<HashMap<String, String>>,
 }
 
 /// Result of running a shell command.
@@ -121,8 +119,8 @@ impl Shell {
 		&self,
 		options: ShellRunOptions,
 		on_chunk: Option<Box<dyn Fn(String) + Send + Sync>>,
+		ct: cancel::CancelToken,
 	) -> Result<ShellRunResult> {
-		let ct = cancel::CancelToken::new(options.timeout_ms);
 		let session = self.session.clone();
 		let config = self.config.clone();
 
@@ -213,8 +211,6 @@ pub struct ShellExecuteOptions {
 	pub env:           Option<HashMap<String, String>>,
 	/// Environment variables to apply once per session.
 	pub session_env:   Option<HashMap<String, String>>,
-	/// Timeout in milliseconds before cancelling the command.
-	pub timeout_ms:    Option<u32>,
 	/// Optional snapshot file to source on session creation.
 	pub snapshot_path: Option<String>,
 }
@@ -237,13 +233,13 @@ pub struct ShellExecuteResult {
 pub async fn execute_shell(
 	options: ShellExecuteOptions,
 	on_chunk: Option<Box<dyn Fn(String) + Send + Sync>>,
+	ct: cancel::CancelToken,
 ) -> Result<ShellExecuteResult> {
 	let config =
 		ShellConfig { session_env: options.session_env, snapshot_path: options.snapshot_path };
 	let run_config =
 		ShellRunConfig { command: options.command, cwd: options.cwd, env: options.env };
 
-	let ct = cancel::CancelToken::new(options.timeout_ms);
 	run_shell_oneshot(config, run_config, on_chunk, ct).await
 }
 

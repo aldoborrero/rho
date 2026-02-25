@@ -41,8 +41,6 @@ pub struct GlobOptions {
 	/// Include `node_modules` entries when the pattern does not explicitly
 	/// mention them.
 	pub include_node_modules: Option<bool>,
-	/// Timeout in milliseconds for the operation.
-	pub timeout_ms:           Option<u32>,
 }
 
 /// Result payload returned by a glob operation.
@@ -209,7 +207,11 @@ fn run_glob(
 /// Returns an error when the search path cannot be resolved, the path is not a
 /// directory, the glob pattern is invalid, or cancellation/timeout is
 /// triggered.
-pub fn glob(options: GlobOptions, on_match: Option<&dyn Fn(&GlobMatch)>) -> Result<GlobResult> {
+pub fn glob(
+	options: GlobOptions,
+	on_match: Option<&dyn Fn(&GlobMatch)>,
+	ct: CancelToken,
+) -> Result<GlobResult> {
 	let GlobOptions {
 		pattern,
 		path,
@@ -221,14 +223,11 @@ pub fn glob(options: GlobOptions, on_match: Option<&dyn Fn(&GlobMatch)>) -> Resu
 		sort_by_mtime,
 		cache,
 		include_node_modules,
-		timeout_ms,
 	} = options;
 
 	let pattern = pattern.trim();
 	let pattern = if pattern.is_empty() { "*" } else { pattern };
 	let pattern = pattern.to_string();
-
-	let ct = CancelToken::new(timeout_ms);
 
 	run_glob(
 		GlobConfig {

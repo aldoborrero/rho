@@ -25,8 +25,6 @@ pub struct FuzzyFindOptions {
 	pub cache:       Option<bool>,
 	/// Maximum number of matches to return (default: 100).
 	pub max_results: Option<u32>,
-	/// Timeout in milliseconds for the operation.
-	pub timeout_ms:  Option<u32>,
 }
 
 /// A single match in fuzzy find results.
@@ -227,13 +225,12 @@ fn score_entries(
 ///
 /// # Arguments
 /// - `options`: Query string, root path, and limits.
+/// - `ct`: Cancellation token for cooperative timeout/abort.
 ///
 /// # Returns
 /// Matching file and directory entries sorted by match quality.
-pub fn fuzzy_find(options: FuzzyFindOptions) -> Result<FuzzyFindResult> {
-	let FuzzyFindOptions { query, path, hidden, gitignore, cache, max_results, timeout_ms } =
-		options;
-	let ct = CancelToken::new(timeout_ms);
+pub fn fuzzy_find(options: FuzzyFindOptions, ct: CancelToken) -> Result<FuzzyFindResult> {
+	let FuzzyFindOptions { query, path, hidden, gitignore, cache, max_results } = options;
 	let config = FuzzyFindConfig { query, path, hidden, gitignore, max_results, cache };
 	fuzzy_find_sync(config, ct)
 }

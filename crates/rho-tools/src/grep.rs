@@ -93,8 +93,6 @@ pub struct GrepOptions {
 	pub max_columns:    Option<u32>,
 	/// Output mode (content, filesWithMatches, or count).
 	pub mode:           Option<String>,
-	/// Timeout in milliseconds for the operation.
-	pub timeout_ms:     Option<u32>,
 }
 
 /// A context line (before or after a match).
@@ -919,7 +917,11 @@ pub fn has_match(
 ///
 /// # Returns
 /// Aggregated results across matching files.
-pub fn grep(options: GrepOptions, on_match: Option<&dyn Fn(&GrepMatch)>) -> Result<GrepResult> {
+pub fn grep(
+	options: GrepOptions,
+	on_match: Option<&dyn Fn(&GrepMatch)>,
+	ct: CancelToken,
+) -> Result<GrepResult> {
 	let GrepOptions {
 		pattern,
 		path,
@@ -936,7 +938,6 @@ pub fn grep(options: GrepOptions, on_match: Option<&dyn Fn(&GrepMatch)>) -> Resu
 		context,
 		max_columns,
 		mode,
-		timeout_ms,
 	} = options;
 
 	let config = GrepConfig {
@@ -957,7 +958,6 @@ pub fn grep(options: GrepOptions, on_match: Option<&dyn Fn(&GrepMatch)>) -> Resu
 		mode,
 	};
 
-	let ct = CancelToken::new(timeout_ms);
 	grep_sync(config, on_match, ct)
 }
 
