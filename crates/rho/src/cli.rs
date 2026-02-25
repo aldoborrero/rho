@@ -7,9 +7,9 @@ pub struct Cli {
 	#[arg(trailing_var_arg = true)]
 	pub message: Vec<String>,
 
-	/// Model name (e.g., claude-sonnet-4-5-20250929)
-	#[arg(short, long, default_value = "claude-sonnet-4-5-20250929")]
-	pub model: String,
+	/// Model name or role (e.g., claude-sonnet-4-5-20250929, default, smol, slow)
+	#[arg(short, long)]
+	pub model: Option<String>,
 
 	/// Continue most recent session
 	#[arg(short, long)]
@@ -31,9 +31,9 @@ pub struct Cli {
 	#[arg(long)]
 	pub api_key: Option<String>,
 
-	/// Thinking level
-	#[arg(long, default_value = "off")]
-	pub thinking: String,
+	/// Thinking level (off, low, medium, high)
+	#[arg(long)]
+	pub thinking: Option<String>,
 
 	/// Ephemeral session (no persistence)
 	#[arg(long)]

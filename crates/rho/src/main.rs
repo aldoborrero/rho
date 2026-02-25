@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use rho::cli::Cli;
-use rho::config::{self, Config};
+use rho::config;
 use rho::modes;
 use rho::session::SessionManager;
 use rho::tools::create_default_registry;
@@ -10,7 +10,11 @@ use rho::tools::create_default_registry;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
 	let cli = Cli::parse();
-	let config = Config::resolve(cli.api_key.as_deref())?;
+	let settings = rho::settings::load(&cli)?;
+	let models_config = rho::models_config::load_models_config()?;
+	let registry = rho::models_config::build_registry(&models_config, &settings);
+	let resolved =
+		rho::models_config::resolve_model(&settings.model.default, &registry, &settings, &models_config)?;
 
 	let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 	let session = if cli.no_session {
@@ -32,5 +36,14 @@ async fn main() -> anyhow::Result<()> {
 
 	let tools = create_default_registry();
 
-	modes::interactive::run_interactive(&cli, config, session, tools).await
+	modes::interactive::run_interactive(
+		&cli,
+		settings,
+		models_config,
+		registry,
+		resolved,
+		session,
+		tools,
+	)
+	.await
 }

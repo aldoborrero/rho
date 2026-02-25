@@ -1,6 +1,6 @@
 //! Types for the slash command system.
 
-use crate::{config::Config, session::SessionManager, tools::registry::ToolRegistry};
+use crate::{session::SessionManager, settings::Settings, tools::registry::ToolRegistry};
 
 /// Result of executing a slash command.
 ///
@@ -20,6 +20,8 @@ pub enum CommandResult {
 	Compact(Option<String>),
 	/// Change the active model.
 	ModelChange(String),
+	/// Settings were changed on disk; event loop should reload.
+	SettingsChanged,
 	/// No visible output (e.g., clipboard operation already done).
 	Silent,
 }
@@ -43,10 +45,10 @@ pub struct SlashCommand {
 ///
 /// Borrows from the event loop's owned state. Commands read but never mutate.
 pub struct CommandContext<'a> {
-	pub name:    &'a str,
-	pub args:    &'a str,
-	pub session: &'a SessionManager,
-	pub config:  &'a Config,
-	pub model:   &'a str,
-	pub tools:   &'a ToolRegistry,
+	pub name:     &'a str,
+	pub args:     &'a str,
+	pub session:  &'a SessionManager,
+	pub settings: &'a Settings,
+	pub model:    &'a str,
+	pub tools:    &'a ToolRegistry,
 }

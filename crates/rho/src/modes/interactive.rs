@@ -8,12 +8,13 @@ use crate::{
 	ai::types::{AssistantMessage, ContentBlock, Message, ToolResultMessage, UserMessage},
 	cli::Cli,
 	commands::{CommandContext, CommandResult},
-	config::Config,
+	models_config::{ModelsConfig, ResolvedModel},
 	modes::{
 		input::{InputAction, route_input},
 		state::AppMode,
 	},
 	session::SessionManager,
+	settings::Settings,
 	tools::registry::ToolRegistry,
 	tui,
 };
@@ -50,7 +51,8 @@ fn spawn_agent(
 	messages: &[Message],
 	tools: &ToolRegistry,
 	system_prompt: &str,
-	cli: &Cli,
+	settings: &Settings,
+	api_key: &str,
 	tx: &tokio::sync::mpsc::Sender<AppEvent>,
 ) {
 	let (agent_tx, mut agent_rx) = tokio::sync::mpsc::channel::<AgentEvent>(64);
@@ -70,10 +72,17 @@ fn spawn_agent(
 	let agent_tools = tools.clone();
 	let agent_config = AgentConfig {
 		system_prompt: system_prompt.to_owned(),
-		max_tokens:    8192,
-		thinking:      parse_thinking(&cli.thinking),
-		retry:         rho_ai::RetryConfig::default(),
+		max_tokens:    settings.agent.max_tokens,
+		thinking:      parse_thinking(&settings.agent.thinking),
+		retry:         rho_ai::RetryConfig {
+			enabled:       true,
+			max_retries:   settings.retry.max_retries,
+			base_delay_ms: settings.retry.base_delay_ms,
+			max_delay_ms:  settings.retry.base_delay_ms * 16,
+		},
 		cwd:           std::env::current_dir().unwrap_or_default(),
+		api_key:       Some(api_key.to_owned()),
+		temperature:   Some(settings.agent.temperature),
 	};
 	let mut agent_messages = messages.to_vec();
 	tokio::spawn(async move {
@@ -114,6 +123,7 @@ enum ApplyOutcome {
 /// Returns [`ApplyOutcome::Exit`] if the event loop should break.
 #[allow(
 	clippy::future_not_send,
+	clippy::too_many_arguments,
 	reason = "App contains non-Send TUI components; runs on the main task only"
 )]
 async fn apply_command_result(
@@ -121,8 +131,12 @@ async fn apply_command_result(
 	session: &mut SessionManager,
 	app: &mut tui::App,
 	terminal: &impl Terminal,
-	model: &rho_ai::Model,
-	config: &Config,
+	model: &mut rho_ai::Model,
+	api_key: &mut String,
+	settings: &mut Settings,
+	registry: &rho_ai::ModelRegistry,
+	models_config: &ModelsConfig,
+	cli: &Cli,
 ) -> anyhow::Result<ApplyOutcome> {
 	match result {
 		CommandResult::Message(msg) => {
@@ -149,12 +163,12 @@ async fn apply_command_result(
 		},
 		CommandResult::Compact(instructions) => {
 			show_chat_message(app, "Compacting conversation...");
-			let settings = crate::compaction::settings::CompactionSettings::default();
+			let compaction_settings = &settings.compaction;
 			match crate::compaction::compact::run_compaction(
 				session,
 				model,
-				&config.api_key,
-				&settings,
+				&settings.api_key,
+				compaction_settings,
 				instructions.as_deref(),
 			)
 			.await
@@ -177,8 +191,35 @@ async fn apply_command_result(
 			}
 		},
 		CommandResult::ModelChange(new_model) => {
-			let _ = new_model;
-			show_chat_message(app, "Model switching not yet implemented.");
+			match crate::models_config::resolve_model(
+				&new_model, registry, settings, models_config,
+			) {
+				Ok(resolved) => {
+					let old_id = model.id.clone();
+					*model = resolved.model;
+					*api_key = resolved.api_key;
+					app.status.set_model(&model.id);
+					app.update_status_border(terminal.columns());
+					show_chat_message(
+						app,
+						&format!("Model changed: {old_id} → {}", model.id),
+					);
+				},
+				Err(e) => {
+					show_chat_message(app, &format!("Failed to switch model: {e}"));
+				},
+			}
+		},
+		CommandResult::SettingsChanged => {
+			match crate::settings::reload(cli) {
+				Ok(new_settings) => {
+					*settings = new_settings;
+					show_chat_message(app, "Settings reloaded.");
+				},
+				Err(e) => {
+					show_chat_message(app, &format!("Failed to reload settings: {e}"));
+				},
+			}
 		},
 		CommandResult::Silent => {},
 	}
@@ -198,7 +239,10 @@ async fn apply_command_result(
 )]
 pub async fn run_interactive(
 	cli: &Cli,
-	config: Config,
+	mut settings: Settings,
+	models_config: ModelsConfig,
+	registry: rho_ai::ModelRegistry,
+	resolved: ResolvedModel,
 	mut session: SessionManager,
 	tools: ToolRegistry,
 ) -> anyhow::Result<()> {
@@ -211,8 +255,9 @@ pub async fn run_interactive(
 		crate::session::breadcrumb::write_breadcrumb(&cwd, file);
 	}
 
-	// Create the AI model.
-	let model = crate::ai::anthropic::create_model(&config, &cli.model);
+	// Unpack the resolved model.
+	let mut model = resolved.model;
+	let mut api_key = resolved.api_key;
 
 	// Build the system prompt once.
 	let system_prompt = crate::prompts::build(&tools, crate::prompts::BuildOptions {
@@ -233,7 +278,7 @@ pub async fn run_interactive(
 	}));
 
 	// Create the TUI application.
-	let mut app = tui::App::new(&cli.model);
+	let mut app = tui::App::new(&model.id);
 
 	// Set session id on the status line.
 	app.status.set_session_id(session.session_id());
@@ -298,7 +343,7 @@ pub async fn run_interactive(
 
 		mode = AppMode::Streaming;
 		app.chat.start_streaming();
-		spawn_agent(&model, session.messages(), &tools, &system_prompt, cli, &tx);
+		spawn_agent(&model, session.messages(), &tools, &system_prompt, &settings, &api_key, &tx);
 	}
 
 	// Perform the initial render.
@@ -377,8 +422,8 @@ pub async fn run_interactive(
 										name,
 										args,
 										session: &session,
-										config: &config,
-										model: &cli.model,
+										settings: &settings,
+										model: &model.id,
 										tools: &tools,
 									};
 									let result = crate::commands::execute_command(&ctx).await?;
@@ -388,8 +433,12 @@ pub async fn run_interactive(
 											&mut session,
 											&mut app,
 											&terminal,
-											&model,
-											&config,
+											&mut model,
+											&mut api_key,
+											&mut settings,
+											&registry,
+											&models_config,
+											cli,
 										)
 										.await?,
 										ApplyOutcome::Exit
@@ -465,7 +514,8 @@ pub async fn run_interactive(
 										session.messages(),
 										&tools,
 										&system_prompt,
-										cli,
+										&settings,
+										&api_key,
 										&tx,
 									);
 								},
@@ -544,18 +594,18 @@ pub async fn run_interactive(
 								+ usage.output_tokens
 								+ usage.cache_creation_input_tokens
 								+ usage.cache_read_input_tokens;
-							let settings = crate::compaction::settings::CompactionSettings::default();
+							let compaction_settings = &settings.compaction;
 							if crate::compaction::settings::should_compact(
 								context_tokens,
 								model.context_window,
-								&settings,
+								compaction_settings,
 							) {
 								show_chat_message(&mut app, "Context nearing limit, compacting...");
 								match crate::compaction::compact::run_compaction(
 									&session,
 									&model,
-									&config.api_key,
-									&settings,
+									&api_key,
+									compaction_settings,
 									None,
 								)
 								.await

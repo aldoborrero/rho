@@ -26,6 +26,7 @@ pub async fn execute_command(ctx: &CommandContext<'_>) -> anyhow::Result<Command
 		"compact" => Ok(handlers::compact::cmd_compact(ctx)),
 		"plan" => Ok(handlers::plan::cmd_plan()),
 		"export" => Ok(handlers::session::cmd_export()),
+		"config" => Ok(handlers::config_cmd::cmd_config(ctx)),
 		"debug" => Ok(handlers::session::cmd_debug(ctx)),
 		"fork" => Ok(handlers::session::cmd_fork()),
 		_ => Ok(CommandResult::Message(format!(
@@ -80,22 +81,22 @@ where
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::{config::Config, session::SessionManager};
+	use crate::{session::SessionManager, settings::Settings};
 
-	fn test_config() -> Config {
-		Config { api_key: String::new(), base_url: String::new(), is_oauth: false }
+	fn test_settings() -> Settings {
+		Settings::default()
 	}
 
 	#[tokio::test]
 	async fn execute_help_returns_message() {
 		let session = SessionManager::in_memory();
-		let config = test_config();
+		let settings = test_settings();
 		let tools = ToolRegistry::new();
 		let ctx = CommandContext {
 			name:    "help",
 			args:    "",
 			session: &session,
-			config:  &config,
+			settings: &settings,
 			model:   "test-model",
 			tools:   &tools,
 		};
@@ -113,13 +114,13 @@ mod tests {
 	#[tokio::test]
 	async fn execute_exit_returns_exit() {
 		let session = SessionManager::in_memory();
-		let config = test_config();
+		let settings = test_settings();
 		let tools = ToolRegistry::new();
 		let ctx = CommandContext {
 			name:    "exit",
 			args:    "",
 			session: &session,
-			config:  &config,
+			settings: &settings,
 			model:   "test-model",
 			tools:   &tools,
 		};
@@ -130,13 +131,13 @@ mod tests {
 	#[tokio::test]
 	async fn execute_new_returns_new_session() {
 		let session = SessionManager::in_memory();
-		let config = test_config();
+		let settings = test_settings();
 		let tools = ToolRegistry::new();
 		let ctx = CommandContext {
 			name:    "new",
 			args:    "",
 			session: &session,
-			config:  &config,
+			settings: &settings,
 			model:   "test-model",
 			tools:   &tools,
 		};
@@ -147,13 +148,13 @@ mod tests {
 	#[tokio::test]
 	async fn execute_model_no_args_shows_current() {
 		let session = SessionManager::in_memory();
-		let config = test_config();
+		let settings = test_settings();
 		let tools = ToolRegistry::new();
 		let ctx = CommandContext {
 			name:    "model",
 			args:    "",
 			session: &session,
-			config:  &config,
+			settings: &settings,
 			model:   "claude-sonnet-4-5-20250929",
 			tools:   &tools,
 		};
@@ -167,38 +168,37 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn execute_model_with_args_shows_not_implemented() {
+	async fn execute_model_with_args_returns_model_change() {
 		let session = SessionManager::in_memory();
-		let config = test_config();
+		let settings = test_settings();
 		let tools = ToolRegistry::new();
 		let ctx = CommandContext {
 			name:    "model",
 			args:    "claude-opus-4-20250514",
 			session: &session,
-			config:  &config,
+			settings: &settings,
 			model:   "claude-sonnet-4-5-20250929",
 			tools:   &tools,
 		};
 		let result = execute_command(&ctx).await.unwrap();
 		match result {
-			CommandResult::Message(text) => {
-				assert!(text.contains("not yet implemented"));
-				assert!(text.contains("claude-sonnet-4-5-20250929"));
+			CommandResult::ModelChange(name) => {
+				assert_eq!(name, "claude-opus-4-20250514");
 			},
-			_ => panic!("Expected CommandResult::Message"),
+			_ => panic!("Expected CommandResult::ModelChange"),
 		}
 	}
 
 	#[tokio::test]
 	async fn execute_session_shows_info() {
 		let session = SessionManager::in_memory();
-		let config = test_config();
+		let settings = test_settings();
 		let tools = ToolRegistry::new();
 		let ctx = CommandContext {
 			name:    "session",
 			args:    "",
 			session: &session,
-			config:  &config,
+			settings: &settings,
 			model:   "test-model",
 			tools:   &tools,
 		};
@@ -217,13 +217,13 @@ mod tests {
 	#[tokio::test]
 	async fn execute_copy_no_messages() {
 		let session = SessionManager::in_memory();
-		let config = test_config();
+		let settings = test_settings();
 		let tools = ToolRegistry::new();
 		let ctx = CommandContext {
 			name:    "copy",
 			args:    "",
 			session: &session,
-			config:  &config,
+			settings: &settings,
 			model:   "test-model",
 			tools:   &tools,
 		};
@@ -239,13 +239,13 @@ mod tests {
 	#[tokio::test]
 	async fn execute_dump_no_messages() {
 		let session = SessionManager::in_memory();
-		let config = test_config();
+		let settings = test_settings();
 		let tools = ToolRegistry::new();
 		let ctx = CommandContext {
 			name:    "dump",
 			args:    "",
 			session: &session,
-			config:  &config,
+			settings: &settings,
 			model:   "test-model",
 			tools:   &tools,
 		};
@@ -261,13 +261,13 @@ mod tests {
 	#[tokio::test]
 	async fn execute_usage_placeholder() {
 		let session = SessionManager::in_memory();
-		let config = test_config();
+		let settings = test_settings();
 		let tools = ToolRegistry::new();
 		let ctx = CommandContext {
 			name:    "usage",
 			args:    "",
 			session: &session,
-			config:  &config,
+			settings: &settings,
 			model:   "test-model",
 			tools:   &tools,
 		};
@@ -283,13 +283,13 @@ mod tests {
 	#[tokio::test]
 	async fn execute_hotkeys_returns_shortcuts() {
 		let session = SessionManager::in_memory();
-		let config = test_config();
+		let settings = test_settings();
 		let tools = ToolRegistry::new();
 		let ctx = CommandContext {
 			name:    "hotkeys",
 			args:    "",
 			session: &session,
-			config:  &config,
+			settings: &settings,
 			model:   "test-model",
 			tools:   &tools,
 		};
@@ -308,13 +308,13 @@ mod tests {
 	#[tokio::test]
 	async fn execute_move_no_args() {
 		let session = SessionManager::in_memory();
-		let config = test_config();
+		let settings = test_settings();
 		let tools = ToolRegistry::new();
 		let ctx = CommandContext {
 			name:    "move",
 			args:    "",
 			session: &session,
-			config:  &config,
+			settings: &settings,
 			model:   "test-model",
 			tools:   &tools,
 		};
@@ -330,13 +330,13 @@ mod tests {
 	#[tokio::test]
 	async fn execute_move_valid_dir() {
 		let session = SessionManager::in_memory();
-		let config = test_config();
+		let settings = test_settings();
 		let tools = ToolRegistry::new();
 		let ctx = CommandContext {
 			name:    "move",
 			args:    "/tmp",
 			session: &session,
-			config:  &config,
+			settings: &settings,
 			model:   "test-model",
 			tools:   &tools,
 		};
@@ -347,13 +347,13 @@ mod tests {
 	#[tokio::test]
 	async fn execute_move_nonexistent_dir() {
 		let session = SessionManager::in_memory();
-		let config = test_config();
+		let settings = test_settings();
 		let tools = ToolRegistry::new();
 		let ctx = CommandContext {
 			name:    "move",
 			args:    "/nonexistent_path_12345",
 			session: &session,
-			config:  &config,
+			settings: &settings,
 			model:   "test-model",
 			tools:   &tools,
 		};
@@ -369,13 +369,13 @@ mod tests {
 	#[tokio::test]
 	async fn execute_compact_returns_compact_variant() {
 		let session = SessionManager::in_memory();
-		let config = test_config();
+		let settings = test_settings();
 		let tools = ToolRegistry::new();
 		let ctx = CommandContext {
 			name:    "compact",
 			args:    "",
 			session: &session,
-			config:  &config,
+			settings: &settings,
 			model:   "test-model",
 			tools:   &tools,
 		};
@@ -386,13 +386,13 @@ mod tests {
 	#[tokio::test]
 	async fn execute_compact_with_instructions() {
 		let session = SessionManager::in_memory();
-		let config = test_config();
+		let settings = test_settings();
 		let tools = ToolRegistry::new();
 		let ctx = CommandContext {
 			name:    "compact",
 			args:    "focus on errors",
 			session: &session,
-			config:  &config,
+			settings: &settings,
 			model:   "test-model",
 			tools:   &tools,
 		};
@@ -408,13 +408,13 @@ mod tests {
 	#[tokio::test]
 	async fn execute_plan_placeholder() {
 		let session = SessionManager::in_memory();
-		let config = test_config();
+		let settings = test_settings();
 		let tools = ToolRegistry::new();
 		let ctx = CommandContext {
 			name:    "plan",
 			args:    "",
 			session: &session,
-			config:  &config,
+			settings: &settings,
 			model:   "test-model",
 			tools:   &tools,
 		};
@@ -430,13 +430,13 @@ mod tests {
 	#[tokio::test]
 	async fn execute_export_placeholder() {
 		let session = SessionManager::in_memory();
-		let config = test_config();
+		let settings = test_settings();
 		let tools = ToolRegistry::new();
 		let ctx = CommandContext {
 			name:    "export",
 			args:    "",
 			session: &session,
-			config:  &config,
+			settings: &settings,
 			model:   "test-model",
 			tools:   &tools,
 		};
@@ -452,13 +452,13 @@ mod tests {
 	#[tokio::test]
 	async fn execute_debug_shows_info() {
 		let session = SessionManager::in_memory();
-		let config = test_config();
+		let settings = test_settings();
 		let tools = ToolRegistry::new();
 		let ctx = CommandContext {
 			name:    "debug",
 			args:    "",
 			session: &session,
-			config:  &config,
+			settings: &settings,
 			model:   "test-model",
 			tools:   &tools,
 		};
@@ -478,13 +478,13 @@ mod tests {
 	#[tokio::test]
 	async fn execute_fork_returns_fork_variant() {
 		let session = SessionManager::in_memory();
-		let config = test_config();
+		let settings = test_settings();
 		let tools = ToolRegistry::new();
 		let ctx = CommandContext {
 			name:    "fork",
 			args:    "",
 			session: &session,
-			config:  &config,
+			settings: &settings,
 			model:   "test-model",
 			tools:   &tools,
 		};
@@ -495,13 +495,13 @@ mod tests {
 	#[tokio::test]
 	async fn execute_unknown_returns_message() {
 		let session = SessionManager::in_memory();
-		let config = test_config();
+		let settings = test_settings();
 		let tools = ToolRegistry::new();
 		let ctx = CommandContext {
 			name:    "nonexistent",
 			args:    "",
 			session: &session,
-			config:  &config,
+			settings: &settings,
 			model:   "test-model",
 			tools:   &tools,
 		};
