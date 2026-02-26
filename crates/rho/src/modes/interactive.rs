@@ -122,7 +122,7 @@ fn spawn_agent(
 	api_key: &str,
 	tx: &tokio::sync::mpsc::Sender<AppEvent>,
 	agent_generation: &mut u64,
-) -> tokio_util::sync::CancellationToken {
+) -> anyhow::Result<tokio_util::sync::CancellationToken> {
 	*agent_generation += 1;
 	let generation = *agent_generation;
 	let cancel = tokio_util::sync::CancellationToken::new();
@@ -156,7 +156,7 @@ fn spawn_agent(
 			base_delay_ms: settings.retry.base_delay_ms,
 			max_delay_ms:  settings.retry.base_delay_ms * 16,
 		},
-		cwd:           std::env::current_dir().unwrap_or_default(),
+		cwd:           std::env::current_dir()?,
 		api_key:       Some(api_key.to_owned()),
 		temperature:   Some(settings.agent.temperature),
 		abort:         Some(cancel.clone()),
@@ -173,7 +173,7 @@ fn spawn_agent(
 		.await;
 	});
 
-	cancel
+	Ok(cancel)
 }
 
 // ---------------------------------------------------------------------------
@@ -323,7 +323,7 @@ pub async fn run_interactive(
 
 	// Write breadcrumb linking this terminal to the session file.
 	if let Some(file) = session.session_file() {
-		let cwd = std::env::current_dir().unwrap_or_default();
+		let cwd = std::env::current_dir()?;
 		crate::session::breadcrumb::write_breadcrumb(&cwd, file);
 	}
 
@@ -335,7 +335,7 @@ pub async fn run_interactive(
 	let system_prompt = crate::prompts::build(&tools, crate::prompts::BuildOptions {
 		custom_prompt:        cli.system_prompt.clone(),
 		append_system_prompt: cli.append_system_prompt.clone(),
-		cwd:                  std::env::current_dir().unwrap_or_default(),
+		cwd:                  std::env::current_dir()?,
 	})
 	.await?;
 
@@ -443,7 +443,7 @@ pub async fn run_interactive(
 			&api_key,
 			&tx,
 			&mut agent_generation,
-		));
+		)?);
 	}
 
 	// Perform the initial render.
@@ -663,7 +663,7 @@ pub async fn run_interactive(
 										&api_key,
 										&tx,
 										&mut agent_generation,
-									));
+									)?);
 								},
 							}
 						} else if data == "\x1b" && matches!(result, InputResult::Ignored) {
