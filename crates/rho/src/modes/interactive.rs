@@ -856,6 +856,10 @@ pub async fn run_interactive(
 		app.render_to_tui(&mut terminal)?;
 	}
 
+	// Restore the default panic hook (the custom one is no longer needed
+	// since we're about to stop raw mode).
+	let _ = std::panic::take_hook();
+
 	// Cleanup: move cursor past the rendered content and restore the terminal.
 	app.tui.stop(&mut terminal)?;
 
