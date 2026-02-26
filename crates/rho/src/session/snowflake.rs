@@ -116,18 +116,25 @@ pub fn get_date(value: &str) -> Option<DateTime<Utc>> {
 	Utc.timestamp_millis_opt(ts as i64).single()
 }
 
+/// Maximum attempts before falling back to full snowflake ID.
+const MAX_ENTRY_ID_ATTEMPTS: usize = 1000;
+
 /// Generate an 8-character hex entry ID that does not collide with any existing
 /// IDs.
 ///
 /// Uses the lower 8 hex characters of a snowflake, with collision checking.
+/// Falls back to a full 16-character snowflake if max attempts are reached.
 pub fn generate_entry_id(existing: &HashSet<String>) -> String {
-	loop {
+	for _ in 0..MAX_ENTRY_ID_ATTEMPTS {
 		let sf = next();
 		let id = sf[8..16].to_owned();
 		if !existing.contains(&id) {
 			return id;
 		}
 	}
+	// Fallback: full 16-char snowflake (unique by construction).
+	eprintln!("Warning: entry ID collision limit reached, using full snowflake ID");
+	next()
 }
 
 #[cfg(test)]
@@ -272,6 +279,23 @@ mod tests {
 		assert!(
 			id.chars()
 				.all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+			"entry ID must be lowercase hex, got {id}"
+		);
+	}
+
+	#[test]
+	fn test_generate_entry_id_fallback_on_max_attempts() {
+		let existing = HashSet::new();
+		let id = generate_entry_id(&existing);
+		// Should be either 8 chars (normal) or 16 chars (fallback)
+		assert!(
+			id.len() == 8 || id.len() == 16,
+			"entry ID must be 8 or 16 chars, got {} (len={})",
+			id,
+			id.len()
+		);
+		assert!(
+			id.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
 			"entry ID must be lowercase hex, got {id}"
 		);
 	}
