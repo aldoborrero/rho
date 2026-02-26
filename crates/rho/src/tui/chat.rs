@@ -506,8 +506,8 @@ impl ChatComponent {
 	/// Check whether item at index `i` is a Read tool result.
 	fn is_read_tool_result(&self, i: usize) -> bool {
 		matches!(&self.items[i], ChatItem::Message(Message::ToolResult(t))
-			if self.tool_name_for_id(&t.tool_use_id) == Some("Read")
-				|| self.tool_name_for_id(&t.tool_use_id) == Some("read"))
+			if self.tool_name_for_id(&t.tool_use_id)
+				.is_some_and(|n| n.eq_ignore_ascii_case("read")))
 	}
 
 	/// Collect consecutive Read tool results starting at index `start`.
