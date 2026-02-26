@@ -557,7 +557,9 @@ impl Component for ChatComponent {
 					i += 1;
 				},
 				ChatItem::Message(Message::BashExecution(_)) => {
-					// BashExecution rendering handled in a later task.
+					// BashExecution messages are rendered via ChatItem::Bang (see add_bang_output).
+					// This arm handles the case where a BashExecution is added directly
+					// via add_message(); it is intentionally skipped as a display item.
 					i += 1;
 				},
 				ChatItem::Bang(bang) => {
