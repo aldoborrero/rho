@@ -131,11 +131,18 @@ impl ChatComponent {
 	}
 
 	/// Finish the streaming bang command and commit it to the display.
-	pub fn finish_bang(&mut self, is_error: bool) {
+	///
+	/// Returns the command and accumulated output so the caller can persist them.
+	pub fn finish_bang(&mut self, is_error: bool) -> Option<(String, String)> {
 		if let Some(mut bang) = self.streaming_bang.take() {
 			bang.is_error = is_error;
+			let command = bang.command.clone();
+			let output = bang.output.clone();
 			self.items.push(ChatItem::Bang(bang));
 			self.loader.stop();
+			Some((command, output))
+		} else {
+			None
 		}
 	}
 

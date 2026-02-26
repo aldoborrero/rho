@@ -48,6 +48,13 @@ pub async fn execute_bang(
 		.await
 }
 
+/// Result of a streaming bang command execution.
+pub struct BangResult {
+	pub is_error:  bool,
+	pub exit_code: Option<i32>,
+	pub cancelled: bool,
+}
+
 /// Execute a `!` shell command with streaming output callback.
 ///
 /// Calls `rho_tools::shell::execute_shell` directly (bypassing `ToolRegistry`)
@@ -56,7 +63,7 @@ pub async fn execute_bang_streaming<F>(
 	command: &str,
 	_tools: &ToolRegistry,
 	on_chunk: F,
-) -> anyhow::Result<rho_agent::tools::ToolOutput>
+) -> anyhow::Result<BangResult>
 where
 	F: Fn(String) + Send + Sync + 'static,
 {
@@ -73,9 +80,10 @@ where
 	let result = rho_tools::shell::execute_shell(options, Some(on_chunk_box), ct).await?;
 
 	let is_error = result.exit_code.is_none_or(|c| c != 0);
-	Ok(rho_agent::tools::ToolOutput {
-		content: String::new(), // Output was already streamed via callback
+	Ok(BangResult {
 		is_error,
+		exit_code: result.exit_code,
+		cancelled: result.cancelled,
 	})
 }
 

@@ -5,7 +5,7 @@ use rho_agent::{
 use rho_tui::{Terminal, component::InputResult};
 
 use crate::{
-	ai::types::{AssistantMessage, ContentBlock, Message, ToolResultMessage, UserMessage},
+	ai::types::{AssistantMessage, BashExecutionMessage, ContentBlock, Message, ToolResultMessage, UserMessage},
 	cli::Cli,
 	commands::{CommandContext, CommandResult},
 	models_config::{ModelsConfig, ResolvedModel},
@@ -39,7 +39,10 @@ enum AppEvent {
 	/// A chunk of output from a bang command.
 	BangChunk(String),
 	/// Bang command completed.
-	BangDone { is_error: bool },
+	BangDone {
+		exit_code: Option<i32>,
+		cancelled: bool,
+	},
 }
 
 /// Map a tool name to a human-readable phase label for the status line.
@@ -89,7 +92,7 @@ fn cancel_bang(
 	if let Some(cancel) = bang_cancel.take() {
 		let _ = cancel.send(());
 	}
-	app.chat.finish_bang(true);
+	let _ = app.chat.finish_bang(true);
 	*mode = AppMode::Idle;
 }
 
@@ -416,6 +419,8 @@ pub async fn run_interactive(
 	let mut agent_cancel: Option<tokio_util::sync::CancellationToken> = None;
 	// Cancellation handle for the currently running bang command.
 	let mut bang_cancel: Option<tokio::sync::oneshot::Sender<()>> = None;
+	// Whether the current bang command should be excluded from context.
+	let mut bang_exclude_from_context: bool = false;
 
 	// If an initial message was provided on the command line, send it immediately.
 	if let Some(initial_text) = cli.initial_message() {
@@ -561,6 +566,7 @@ pub async fn run_interactive(
 									// Start a streaming bang output block.
 									app.chat.start_bang(cmd);
 									mode = AppMode::BangRunning;
+									bang_exclude_from_context = exclude_from_context;
 
 									// Spawn background execution with cancellation support.
 									let chunk_tx = tx.clone();
@@ -584,14 +590,18 @@ pub async fn run_interactive(
 											_ = cancel_rx => {
 												// Cancelled by Ctrl+C — future is dropped,
 												// which cleans up the shell process.
-												Ok(rho_agent::tools::ToolOutput {
-													content: String::new(),
+												Ok(crate::commands::BangResult {
 													is_error: true,
+													exit_code: None,
+													cancelled: true,
 												})
 											}
 										};
-										let is_error = result.map_or(true, |o| o.is_error);
-										let _ = done_tx.send(AppEvent::BangDone { is_error }).await;
+										let (exit_code, cancelled) = match result {
+											Ok(r) => (r.exit_code, r.cancelled),
+											Err(_) => (None, false),
+										};
+										let _ = done_tx.send(AppEvent::BangDone { exit_code, cancelled }).await;
 									});
 								},
 								InputAction::UserMessage(text) => {
@@ -790,9 +800,21 @@ pub async fn run_interactive(
 					app.chat.append_bang_output(&chunk);
 				}
 			},
-			Some(AppEvent::BangDone { is_error }) => {
+			Some(AppEvent::BangDone { exit_code, cancelled }) => {
 				if matches!(mode, AppMode::BangRunning) {
-					app.chat.finish_bang(is_error);
+					let is_error = exit_code.is_none_or(|c| c != 0);
+					if let Some((command, output)) = app.chat.finish_bang(is_error) {
+						let bash_msg = Message::BashExecution(BashExecutionMessage {
+							command,
+							output,
+							exit_code,
+							cancelled,
+							truncated:            false,
+							exclude_from_context: bang_exclude_from_context,
+							timestamp:            chrono::Utc::now().timestamp(),
+						});
+						session.append(bash_msg).await?;
+					}
 					mode = AppMode::Idle;
 				}
 			},
