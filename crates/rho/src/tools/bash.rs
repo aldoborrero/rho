@@ -37,8 +37,10 @@ impl TailBuffer {
 		if self.buf.len() > self.max_bytes {
 			self.truncated = true;
 			let excess = self.buf.len() - self.max_bytes;
-			// Drain from the front to keep the tail.
-			self.buf.drain(..excess);
+			// Round up to the next UTF-8 character boundary to avoid
+			// panicking on multi-byte characters at the drain point.
+			let drain_to = self.buf.ceil_char_boundary(excess);
+			self.buf.drain(..drain_to);
 		}
 	}
 
@@ -244,6 +246,31 @@ mod tests {
 		assert_eq!(buf.total_bytes, 16);
 		assert!(buf.truncated);
 		assert_eq!(buf.text(), "ghijklmnop"); // last 10 bytes
+	}
+
+	#[test]
+	fn test_tail_buffer_multibyte_utf8() {
+		// Buffer of 5 bytes. Fill with 4 bytes of ASCII, then append a 3-byte
+		// UTF-8 char (e.g. 'あ' = 3 bytes). Total = 7, excess = 2, but byte
+		// offset 2 might fall inside a multi-byte char at the front.
+		let mut buf = TailBuffer::new(5);
+		buf.append("abcd"); // 4 bytes
+		buf.append("あ"); // 3 bytes (UTF-8: 0xE3 0x81 0x82) -> total 7, excess 2
+		assert!(buf.truncated);
+		// drain_to rounds up to char boundary (3 for 'a','b','c' are 1-byte each,
+		// so draining 2 bytes is safe here). Result keeps last 5 bytes.
+		assert!(buf.text().is_char_boundary(0)); // must be valid UTF-8
+		assert_eq!(buf.total_bytes, 7);
+
+		// Harder case: buffer starts with multi-byte chars
+		let mut buf2 = TailBuffer::new(6);
+		buf2.append("ああ"); // 6 bytes (2 * 3-byte chars), exactly at limit
+		assert!(!buf2.truncated);
+		buf2.append("x"); // 7 bytes total, excess = 1, but byte 1 is mid-char
+		assert!(buf2.truncated);
+		// Should round up to drain 3 bytes (full first 'あ'), keeping "あx"
+		assert_eq!(buf2.text(), "あx");
+		assert_eq!(buf2.total_bytes, 7);
 	}
 
 	#[tokio::test]
