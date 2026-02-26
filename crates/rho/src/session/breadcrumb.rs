@@ -53,17 +53,11 @@ pub fn write_breadcrumb_to(
 	let breadcrumb_file = breadcrumb_dir.join(terminal_id);
 	let content = format!("{}\n{}\n", cwd.display(), session_file.display());
 	if let Err(e) = std::fs::create_dir_all(breadcrumb_dir) {
-		eprintln!(
-			"Warning: failed to create breadcrumb directory {}: {e}",
-			breadcrumb_dir.display()
-		);
+		eprintln!("Warning: failed to create breadcrumb directory {}: {e}", breadcrumb_dir.display());
 		return;
 	}
 	if let Err(e) = std::fs::write(&breadcrumb_file, content) {
-		eprintln!(
-			"Warning: failed to write breadcrumb file {}: {e}",
-			breadcrumb_file.display()
-		);
+		eprintln!("Warning: failed to write breadcrumb file {}: {e}", breadcrumb_file.display());
 	}
 }
 

@@ -295,7 +295,8 @@ mod tests {
 			id.len()
 		);
 		assert!(
-			id.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+			id.chars()
+				.all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
 			"entry ID must be lowercase hex, got {id}"
 		);
 	}

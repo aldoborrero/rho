@@ -28,12 +28,7 @@ struct TailBuffer {
 
 impl TailBuffer {
 	const fn new(max_bytes: usize) -> Self {
-		Self {
-			buf: String::new(),
-			max_bytes,
-			total_bytes: 0,
-			truncated: false,
-		}
+		Self { buf: String::new(), max_bytes, total_bytes: 0, truncated: false }
 	}
 
 	fn append(&mut self, chunk: &str) {
@@ -257,11 +252,7 @@ mod tests {
 		let ct = CancellationToken::new();
 		// Generate output larger than MAX_OUTPUT_BYTES (100KB).
 		let result = tool
-			.execute(
-				json!({"command": "head -c 204800 /dev/urandom | base64"}),
-				Path::new("."),
-				&ct,
-			)
+			.execute(json!({"command": "head -c 204800 /dev/urandom | base64"}), Path::new("."), &ct)
 			.await
 			.unwrap();
 		// Output should contain the truncation notice.

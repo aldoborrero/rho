@@ -27,7 +27,9 @@ fn to_ai_message(msg: &Message) -> rho_ai::types::Message {
 			})
 		},
 		Message::BashExecution(_) => {
-			unreachable!("BashExecution messages are filtered by build_context before reaching the provider")
+			unreachable!(
+				"BashExecution messages are filtered by build_context before reaching the provider"
+			)
 		},
 	}
 }
