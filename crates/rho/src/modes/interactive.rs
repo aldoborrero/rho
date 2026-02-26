@@ -592,17 +592,17 @@ pub async fn run_interactive(
 									});
 								},
 								InputAction::UserMessage(text) => {
-									// If already streaming, interrupt the current agent run
-									// first. The generation increment inside spawn_agent
-									// ensures the old run's events are dropped.
+									// If already streaming, cancel the current agent run
+									// first. cancel_streaming increments agent_generation
+									// immediately, closing the race window where stale
+									// events could corrupt the new agent's state.
 									if matches!(mode, AppMode::Streaming) {
-										if let Some(token) = agent_cancel.take() {
-											token.cancel();
-										}
-										if let Some(partial) = app.chat.commit_partial_streaming() {
+										if let Some(partial) = cancel_streaming(
+											&mut mode, &mut app, &terminal,
+											&mut agent_generation, &mut agent_cancel,
+										) {
 											session.append(Message::Assistant(partial)).await?;
 										}
-										app.chat.finish_streaming();
 									}
 
 									let user_msg = Message::User(UserMessage { content: text.to_owned() });

@@ -8,7 +8,7 @@
 use std::{
 	collections::HashMap,
 	fs::{self, File, OpenOptions},
-	io::{BufWriter, Write},
+	io::Write,
 	path::{Path, PathBuf},
 	sync::{Arc, Mutex},
 	time::SystemTime,
@@ -391,7 +391,7 @@ impl SessionStorage for FileSessionStorage {
 			.append(append)
 			.truncate(!append)
 			.open(path)?;
-		Ok(Box::new(FileSessionWriter { writer: BufWriter::new(file) }))
+		Ok(Box::new(FileSessionWriter { file }))
 	}
 }
 
@@ -399,22 +399,26 @@ impl SessionStorage for FileSessionStorage {
 // FileSessionWriter
 // ---------------------------------------------------------------------------
 
-/// Writer backed by a real file with buffered I/O.
+/// Writer backed by a real file.
+///
+/// Uses a single `write_all` call per entry (line + newline combined) to
+/// avoid partial writes that could leave the session file unrecoverable
+/// after a crash.
 struct FileSessionWriter {
-	writer: BufWriter<File>,
+	file: File,
 }
 
 impl SessionWriter for FileSessionWriter {
 	fn write_line(&mut self, line: &str) -> Result<()> {
-		self.writer.write_all(line.as_bytes())?;
-		self.writer.write_all(b"\n")?;
+		let mut buf = Vec::with_capacity(line.len() + 1);
+		buf.extend_from_slice(line.as_bytes());
+		buf.push(b'\n');
+		self.file.write_all(&buf)?;
 		Ok(())
 	}
 
 	fn flush(&mut self) -> Result<()> {
-		Write::flush(&mut self.writer)?;
-		// fsync for durability
-		self.writer.get_ref().sync_all()?;
+		self.file.sync_all()?;
 		Ok(())
 	}
 

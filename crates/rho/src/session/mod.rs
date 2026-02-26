@@ -880,6 +880,10 @@ fn truncate_for_persistence(value: &mut Value, blob_store: Option<&BlobStore>) -
 
 impl SessionManager {
 	/// Parse JSONL content into a header and entries.
+	///
+	/// Tolerates a malformed last line (likely a partial write from a crash)
+	/// by skipping it with a warning. Mid-file corruption still returns an
+	/// error so that data integrity issues are surfaced.
 	fn parse_jsonl(content: &str) -> Result<(SessionHeader, Vec<SessionEntry>)> {
 		let mut lines = content.lines();
 
@@ -893,17 +897,26 @@ impl SessionManager {
 			FileEntry::Entry(_) => bail!("Expected session header, got entry"),
 		};
 
-		// Remaining lines are entries.
+		// Collect remaining non-empty lines.
+		let remaining: Vec<&str> = lines
+			.map(|l| l.trim())
+			.filter(|l| !l.is_empty())
+			.collect();
+
 		let mut entries = Vec::new();
-		for line in lines {
-			let line = line.trim();
-			if line.is_empty() {
-				continue;
-			}
-			let file_entry: FileEntry = serde_json::from_str(line)?;
-			match file_entry {
-				FileEntry::Entry(entry) => entries.push(entry),
-				FileEntry::Header(_) => bail!("Unexpected second header in session file"),
+		let last_idx = remaining.len().saturating_sub(1);
+
+		for (i, line) in remaining.iter().enumerate() {
+			match serde_json::from_str::<FileEntry>(line) {
+				Ok(FileEntry::Entry(entry)) => entries.push(entry),
+				Ok(FileEntry::Header(_)) => bail!("Unexpected second header in session file"),
+				Err(e) if i == last_idx && !remaining.is_empty() => {
+					eprintln!(
+						"Warning: skipping malformed last entry in session file \
+						 (possible partial write): {e}"
+					);
+				},
+				Err(e) => return Err(e.into()),
 			}
 		}
 
@@ -1830,5 +1843,109 @@ mod tests {
 			let entry: serde_json::Value = serde_json::from_str(line).unwrap();
 			assert_eq!(entry["type"], "message");
 		}
+	}
+
+	// -- Tolerant JSONL reader tests --
+
+	/// Helper: build a valid session header JSON line.
+	fn make_header_line(session_id: &str) -> String {
+		serde_json::to_string(&serde_json::json!({
+			"type": "session",
+			"version": 1,
+			"id": session_id,
+			"timestamp": "2026-01-15T10:30:00+00:00",
+			"cwd": "/tmp/test",
+		}))
+		.unwrap()
+	}
+
+	/// Helper: build a valid message entry JSON line.
+	fn make_entry_line(id: &str, parent_id: Option<&str>, content: &str) -> String {
+		serde_json::to_string(&serde_json::json!({
+			"type": "message",
+			"id": id,
+			"parent_id": parent_id,
+			"timestamp": "2026-01-15T10:31:00+00:00",
+			"message": {
+				"role": "user",
+				"content": content,
+			}
+		}))
+		.unwrap()
+	}
+
+	#[test]
+	fn test_parse_jsonl_tolerates_malformed_last_line() {
+		let header = make_header_line("0000000000000001");
+		let entry1 = make_entry_line("aa000001", None, "Hello");
+		let entry2 = make_entry_line("aa000002", Some("aa000001"), "World");
+		let malformed = r#"{"type": "message", "id": "aa000003", BROKEN"#;
+
+		let content = format!("{header}\n{entry1}\n{entry2}\n{malformed}\n");
+		let (parsed_header, entries) = SessionManager::parse_jsonl(&content).unwrap();
+
+		assert_eq!(parsed_header.id, "0000000000000001");
+		// The two valid entries should be preserved; the malformed last line skipped.
+		assert_eq!(entries.len(), 2);
+	}
+
+	#[test]
+	fn test_parse_jsonl_fails_on_mid_file_corruption() {
+		let header = make_header_line("0000000000000001");
+		let entry1 = make_entry_line("aa000001", None, "Hello");
+		let corrupted = "NOT VALID JSON AT ALL";
+		let entry3 = make_entry_line("aa000003", Some("aa000001"), "After corruption");
+
+		let content = format!("{header}\n{entry1}\n{corrupted}\n{entry3}\n");
+		let result = SessionManager::parse_jsonl(&content);
+
+		assert!(result.is_err(), "Mid-file corruption should cause an error");
+	}
+
+	#[test]
+	fn test_parse_jsonl_valid_content_unchanged() {
+		let header = make_header_line("0000000000000001");
+		let entry1 = make_entry_line("aa000001", None, "Hello");
+		let entry2 = make_entry_line("aa000002", Some("aa000001"), "World");
+
+		let content = format!("{header}\n{entry1}\n{entry2}\n");
+		let (_, entries) = SessionManager::parse_jsonl(&content).unwrap();
+
+		assert_eq!(entries.len(), 2, "All valid entries should be parsed");
+	}
+
+	#[test]
+	fn test_parse_jsonl_partial_write_without_newline() {
+		// Simulates a crash mid-write where the last line has no trailing newline.
+		let header = make_header_line("0000000000000001");
+		let entry1 = make_entry_line("aa000001", None, "Hello");
+		let partial = r#"{"type": "message", "id": "aa00"#; // truncated
+
+		let content = format!("{header}\n{entry1}\n{partial}");
+		let (_, entries) = SessionManager::parse_jsonl(&content).unwrap();
+
+		assert_eq!(entries.len(), 1, "Only the valid entry should be parsed");
+	}
+
+	// -- Atomic FileSessionWriter tests --
+
+	#[test]
+	fn test_file_writer_large_entry_atomic() {
+		let tmp = tempfile::tempdir().unwrap();
+		let s = storage::FileSessionStorage;
+		let p = tmp.path().join("large.jsonl");
+
+		let mut writer = s.open_writer(&p, false).unwrap();
+
+		// Write a line larger than the typical BufWriter buffer (8KB).
+		let large_line = "x".repeat(16_000);
+		writer.write_line(&large_line).unwrap();
+		writer.flush().unwrap();
+		writer.close().unwrap();
+
+		let content = s.read_text(&p).unwrap();
+		let lines: Vec<&str> = content.lines().collect();
+		assert_eq!(lines.len(), 1, "Should have exactly one line");
+		assert_eq!(lines[0], large_line, "Line content should match");
 	}
 }
