@@ -132,7 +132,8 @@ impl ChatComponent {
 
 	/// Finish the streaming bang command and commit it to the display.
 	///
-	/// Returns the command and accumulated output so the caller can persist them.
+	/// Returns the command and accumulated output so the caller can persist
+	/// them.
 	pub fn finish_bang(&mut self, is_error: bool) -> Option<(String, String)> {
 		if let Some(mut bang) = self.streaming_bang.take() {
 			bang.is_error = is_error;
@@ -201,13 +202,13 @@ impl ChatComponent {
 			});
 		}
 		if !self.streaming_text.is_empty() {
-			content.push(ContentBlock::Text {
-				text: std::mem::take(&mut self.streaming_text),
-			});
+			content.push(ContentBlock::Text { text: std::mem::take(&mut self.streaming_text) });
 		}
 
 		let message = AssistantMessage { content, stop_reason: None, usage: None };
-		self.items.push(ChatItem::Message(Message::Assistant(message.clone())));
+		self
+			.items
+			.push(ChatItem::Message(Message::Assistant(message.clone())));
 		Some(message)
 	}
 
@@ -268,15 +269,16 @@ impl ChatComponent {
 
 	/// Look up the tool name for a given `tool_use_id`.
 	fn tool_name_for_id(&self, tool_use_id: &str) -> Option<String> {
-		self.find_tool_use_data(tool_use_id)
+		self
+			.find_tool_use_data(tool_use_id)
 			.map(|(name, _)| name.to_owned())
 	}
 
 	/// Check whether a `ToolResult` message exists for the given `tool_use_id`.
 	fn has_tool_result(&self, tool_use_id: &str) -> bool {
-		self.items.iter().any(|item| {
-			matches!(item, ChatItem::Message(Message::ToolResult(t)) if t.tool_use_id == tool_use_id)
-		})
+		self.items.iter().any(
+			|item| matches!(item, ChatItem::Message(Message::ToolResult(t)) if t.tool_use_id == tool_use_id),
+		)
 	}
 
 	fn render_user_message(&self, msg: &UserMessage, width: u16) -> Vec<String> {
@@ -435,10 +437,7 @@ impl ChatComponent {
 					label: Some(self.theme.dim("Command")),
 					lines: vec![format!("$ {}", bang.command)],
 				},
-				OutputSection {
-					label: Some(self.theme.dim("Output")),
-					lines: collapsed,
-				},
+				OutputSection { label: Some(self.theme.dim("Output")), lines: collapsed },
 			],
 			border_style: make_border_style(&self.theme, state),
 			bg_style: make_bg_style(&self.theme, state),
@@ -464,10 +463,7 @@ impl ChatComponent {
 			let max_lines = if self.tools_expanded { 50 } else { 20 };
 			let content_lines: Vec<&str> = bang.output.lines().collect();
 			let collapsed = collapse_lines(&content_lines, max_lines, &self.theme);
-			sections.push(OutputSection {
-				label: Some(self.theme.dim("Output")),
-				lines: collapsed,
-			});
+			sections.push(OutputSection { label: Some(self.theme.dim("Output")), lines: collapsed });
 		}
 
 		let opts = OutputBlockOptions {
@@ -500,18 +496,17 @@ impl ChatComponent {
 		let mut i = start;
 		while i < self.items.len() && self.is_read_tool_result(i) {
 			if let ChatItem::Message(Message::ToolResult(t)) = &self.items[i] {
-				let file_path = self
-					.find_tool_use_data(&t.tool_use_id)
-					.map_or_else(
-						|| "unknown".to_owned(),
-						|(_, args)| {
-							args.get("path")
-								.or_else(|| args.get("file_path"))
-								.and_then(serde_json::Value::as_str)
-								.unwrap_or("unknown")
-								.to_owned()
-						},
-					);
+				let file_path = self.find_tool_use_data(&t.tool_use_id).map_or_else(
+					|| "unknown".to_owned(),
+					|(_, args)| {
+						args
+							.get("path")
+							.or_else(|| args.get("file_path"))
+							.and_then(serde_json::Value::as_str)
+							.unwrap_or("unknown")
+							.to_owned()
+					},
+				);
 				entries.push(ReadGroupEntry { file_path, is_error: t.is_error });
 			}
 			i += 1;
@@ -547,11 +542,7 @@ impl Component for ChatComponent {
 						let (entries, count) = self.collect_read_group(i);
 						if entries.len() >= 2 {
 							// Render as a grouped tree.
-							lines.extend(render_read_group(
-								&entries,
-								&self.symbols.tree,
-								&self.theme,
-							));
+							lines.extend(render_read_group(&entries, &self.symbols.tree, &self.theme));
 							i += count;
 							continue;
 						}
@@ -1116,15 +1107,9 @@ mod tests {
 		}));
 		let lines = chat.render(80);
 		// Single read should NOT be grouped.
-		assert!(
-			!lines.iter().any(|l| l.contains("Read (1)")),
-			"single read should not be grouped",
-		);
+		assert!(!lines.iter().any(|l| l.contains("Read (1)")), "single read should not be grouped",);
 		// Should still show the file path from render_combined.
-		assert!(
-			lines.iter().any(|l| l.contains("foo.rs")),
-			"single read should show file path",
-		);
+		assert!(lines.iter().any(|l| l.contains("foo.rs")), "single read should show file path",);
 	}
 
 	// ── Thinking block ────────────────────────────────────────────
@@ -1132,7 +1117,10 @@ mod tests {
 	#[test]
 	fn test_thinking_collapsed_shows_line_count() {
 		let mut chat = ChatComponent::new(test_theme(), test_symbols());
-		let thinking = (0..10).map(|i| format!("thought {i}")).collect::<Vec<_>>().join("\n");
+		let thinking = (0..10)
+			.map(|i| format!("thought {i}"))
+			.collect::<Vec<_>>()
+			.join("\n");
 		chat.add_message(Message::Assistant(AssistantMessage {
 			content:     vec![ContentBlock::Thinking { thinking }],
 			stop_reason: None,
@@ -1153,7 +1141,10 @@ mod tests {
 	#[test]
 	fn test_thinking_expanded_shows_all() {
 		let mut chat = ChatComponent::new(test_theme(), test_symbols());
-		let thinking = (0..10).map(|i| format!("thought {i}")).collect::<Vec<_>>().join("\n");
+		let thinking = (0..10)
+			.map(|i| format!("thought {i}"))
+			.collect::<Vec<_>>()
+			.join("\n");
 		chat.add_message(Message::Assistant(AssistantMessage {
 			content:     vec![ContentBlock::Thinking { thinking }],
 			stop_reason: None,
@@ -1181,7 +1172,10 @@ mod tests {
 	#[test]
 	fn test_thinking_collapsed_truncates() {
 		let mut chat = ChatComponent::new(test_theme(), test_symbols());
-		let thinking = (0..20).map(|i| format!("thought {i}")).collect::<Vec<_>>().join("\n");
+		let thinking = (0..20)
+			.map(|i| format!("thought {i}"))
+			.collect::<Vec<_>>()
+			.join("\n");
 		chat.add_message(Message::Assistant(AssistantMessage {
 			content:     vec![ContentBlock::Thinking { thinking }],
 			stop_reason: None,

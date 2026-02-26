@@ -35,10 +35,16 @@ pub fn route_input(text: &str) -> InputAction<'_> {
 	}
 
 	if text.starts_with("!!") {
-		return InputAction::BangCommand { cmd: &text[2..], exclude_from_context: true };
+		return InputAction::BangCommand {
+			cmd:                  &text[2..],
+			exclude_from_context: true,
+		};
 	}
 	if text.starts_with('!') {
-		return InputAction::BangCommand { cmd: &text[1..], exclude_from_context: false };
+		return InputAction::BangCommand {
+			cmd:                  &text[1..],
+			exclude_from_context: false,
+		};
 	}
 
 	InputAction::UserMessage(text)

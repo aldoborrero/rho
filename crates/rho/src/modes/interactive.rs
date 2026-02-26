@@ -5,7 +5,9 @@ use rho_agent::{
 use rho_tui::{Terminal, component::InputResult};
 
 use crate::{
-	ai::types::{AssistantMessage, BashExecutionMessage, ContentBlock, Message, ToolResultMessage, UserMessage},
+	ai::types::{
+		AssistantMessage, BashExecutionMessage, ContentBlock, Message, ToolResultMessage, UserMessage,
+	},
 	cli::Cli,
 	commands::{CommandContext, CommandResult},
 	models_config::{ModelsConfig, ResolvedModel},
@@ -39,10 +41,7 @@ enum AppEvent {
 	/// A chunk of output from a bang command.
 	BangChunk(String),
 	/// Bang command completed.
-	BangDone {
-		exit_code: Option<i32>,
-		cancelled: bool,
-	},
+	BangDone { exit_code: Option<i32>, cancelled: bool },
 }
 
 /// Map a tool name to a human-readable phase label for the status line.
@@ -271,35 +270,28 @@ async fn apply_command_result(
 			}
 		},
 		CommandResult::ModelChange(new_model) => {
-			match crate::models_config::resolve_model(
-				&new_model, registry, settings, models_config,
-			) {
+			match crate::models_config::resolve_model(&new_model, registry, settings, models_config) {
 				Ok(resolved) => {
 					let old_id = model.id.clone();
 					*model = resolved.model;
 					*api_key = resolved.api_key;
 					app.status.set_model(&model.id);
 					app.update_status_border(terminal.columns());
-					show_chat_message(
-						app,
-						&format!("Model changed: {old_id} → {}", model.id),
-					);
+					show_chat_message(app, &format!("Model changed: {old_id} → {}", model.id));
 				},
 				Err(e) => {
 					show_chat_message(app, &format!("Failed to switch model: {e}"));
 				},
 			}
 		},
-		CommandResult::SettingsChanged => {
-			match crate::settings::reload(cli) {
-				Ok(new_settings) => {
-					*settings = new_settings;
-					show_chat_message(app, "Settings reloaded.");
-				},
-				Err(e) => {
-					show_chat_message(app, &format!("Failed to reload settings: {e}"));
-				},
-			}
+		CommandResult::SettingsChanged => match crate::settings::reload(cli) {
+			Ok(new_settings) => {
+				*settings = new_settings;
+				show_chat_message(app, "Settings reloaded.");
+			},
+			Err(e) => {
+				show_chat_message(app, &format!("Failed to reload settings: {e}"));
+			},
 		},
 		CommandResult::Silent => {},
 	}
@@ -410,7 +402,8 @@ pub async fn run_interactive(
 		match msg {
 			Message::BashExecution(bash) => {
 				let is_error = bash.exit_code.is_none_or(|c| c != 0);
-				app.chat.add_bang_output(&bash.command, &bash.output, is_error);
+				app.chat
+					.add_bang_output(&bash.command, &bash.output, is_error);
 			},
 			_ => {
 				app.chat.add_message(msg.clone());
@@ -441,7 +434,16 @@ pub async fn run_interactive(
 		app.status.clear_work_status();
 		app.status.start_working();
 		app.update_status_border(terminal.columns());
-		agent_cancel = Some(spawn_agent(&model, session.messages(), &tools, &system_prompt, &settings, &api_key, &tx, &mut agent_generation));
+		agent_cancel = Some(spawn_agent(
+			&model,
+			session.messages(),
+			&tools,
+			&system_prompt,
+			&settings,
+			&api_key,
+			&tx,
+			&mut agent_generation,
+		));
 	}
 
 	// Perform the initial render.
@@ -476,7 +478,13 @@ pub async fn run_interactive(
 					// Ctrl+C
 					if data == "\x03" {
 						if matches!(mode, AppMode::Streaming) {
-							if let Some(partial) = cancel_streaming(&mut mode, &mut app, &terminal, &mut agent_generation, &mut agent_cancel) {
+							if let Some(partial) = cancel_streaming(
+								&mut mode,
+								&mut app,
+								&terminal,
+								&mut agent_generation,
+								&mut agent_cancel,
+							) {
 								session.append(Message::Assistant(partial)).await?;
 							}
 						} else if matches!(mode, AppMode::BangRunning) {
@@ -498,11 +506,16 @@ pub async fn run_interactive(
 						app.chat.toggle_tool_expansion();
 					}
 					// Escape — cancel active operation (bypasses editor).
-					else if data == "\x1b"
-						&& matches!(mode, AppMode::Streaming | AppMode::BangRunning)
+					else if data == "\x1b" && matches!(mode, AppMode::Streaming | AppMode::BangRunning)
 					{
 						if matches!(mode, AppMode::Streaming) {
-							if let Some(partial) = cancel_streaming(&mut mode, &mut app, &terminal, &mut agent_generation, &mut agent_cancel) {
+							if let Some(partial) = cancel_streaming(
+								&mut mode,
+								&mut app,
+								&terminal,
+								&mut agent_generation,
+								&mut agent_cancel,
+							) {
 								session.append(Message::Assistant(partial)).await?;
 							}
 						} else {
@@ -565,7 +578,8 @@ pub async fn run_interactive(
 								InputAction::BangCommand { cmd, exclude_from_context } => {
 									// Show the user's command in chat.
 									app.chat.add_message(Message::User(UserMessage {
-										content: format!("{}{}",
+										content: format!(
+											"{}{}",
 											if exclude_from_context { "!!" } else { "!" },
 											cmd
 										),
@@ -609,7 +623,9 @@ pub async fn run_interactive(
 											Ok(r) => (r.exit_code, r.cancelled),
 											Err(_) => (None, false),
 										};
-										let _ = done_tx.send(AppEvent::BangDone { exit_code, cancelled }).await;
+										let _ = done_tx
+											.send(AppEvent::BangDone { exit_code, cancelled })
+											.await;
 									});
 								},
 								InputAction::UserMessage(text) => {
@@ -619,8 +635,11 @@ pub async fn run_interactive(
 									// events could corrupt the new agent's state.
 									if matches!(mode, AppMode::Streaming) {
 										if let Some(partial) = cancel_streaming(
-											&mut mode, &mut app, &terminal,
-											&mut agent_generation, &mut agent_cancel,
+											&mut mode,
+											&mut app,
+											&terminal,
+											&mut agent_generation,
+											&mut agent_cancel,
 										) {
 											session.append(Message::Assistant(partial)).await?;
 										}
@@ -706,7 +725,8 @@ pub async fn run_interactive(
 							app.update_status_border(terminal.columns());
 						}
 						session.append(Message::Assistant(message.clone())).await?;
-						app.chat.finish_streaming_with_message(Message::Assistant(message));
+						app.chat
+							.finish_streaming_with_message(Message::Assistant(message));
 					},
 					AgentEvent::ToolResultComplete { tool_use_id, content, is_error } => {
 						let tool_msg =
@@ -775,7 +795,9 @@ pub async fn run_interactive(
 											Err(e) => {
 												show_chat_message(
 													&mut app,
-													&format!("Auto-compaction succeeded but failed to persist: {e}"),
+													&format!(
+														"Auto-compaction succeeded but failed to persist: {e}"
+													),
 												);
 											},
 										}
@@ -817,9 +839,9 @@ pub async fn run_interactive(
 							output,
 							exit_code,
 							cancelled,
-							truncated:            false,
+							truncated: false,
 							exclude_from_context: bang_exclude_from_context,
-							timestamp:            chrono::Utc::now().timestamp(),
+							timestamp: chrono::Utc::now().timestamp(),
 						});
 						session.append(bash_msg).await?;
 					}

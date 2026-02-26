@@ -78,7 +78,8 @@ pub fn build_context(branch: &[&SessionEntry]) -> SessionContext {
 							if bash.exit_code.is_none_or(|c| c != 0) {
 								format!(
 									"\n[exit code: {}]",
-									bash.exit_code
+									bash
+										.exit_code
 										.map_or("unknown".to_owned(), |c| c.to_string())
 								)
 							} else {

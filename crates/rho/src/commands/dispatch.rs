@@ -80,11 +80,7 @@ where
 	let result = rho_tools::shell::execute_shell(options, Some(on_chunk_box), ct).await?;
 
 	let is_error = result.exit_code.is_none_or(|c| c != 0);
-	Ok(BangResult {
-		is_error,
-		exit_code: result.exit_code,
-		cancelled: result.cancelled,
-	})
+	Ok(BangResult { is_error, exit_code: result.exit_code, cancelled: result.cancelled })
 }
 
 #[cfg(test)]
@@ -102,12 +98,12 @@ mod tests {
 		let settings = test_settings();
 		let tools = ToolRegistry::new();
 		let ctx = CommandContext {
-			name:    "help",
-			args:    "",
-			session: &session,
+			name:     "help",
+			args:     "",
+			session:  &session,
 			settings: &settings,
-			model:   "test-model",
-			tools:   &tools,
+			model:    "test-model",
+			tools:    &tools,
 		};
 		let result = execute_command(&ctx).await.unwrap();
 		match result {
@@ -126,12 +122,12 @@ mod tests {
 		let settings = test_settings();
 		let tools = ToolRegistry::new();
 		let ctx = CommandContext {
-			name:    "exit",
-			args:    "",
-			session: &session,
+			name:     "exit",
+			args:     "",
+			session:  &session,
 			settings: &settings,
-			model:   "test-model",
-			tools:   &tools,
+			model:    "test-model",
+			tools:    &tools,
 		};
 		let result = execute_command(&ctx).await.unwrap();
 		assert!(matches!(result, CommandResult::Exit));
@@ -143,12 +139,12 @@ mod tests {
 		let settings = test_settings();
 		let tools = ToolRegistry::new();
 		let ctx = CommandContext {
-			name:    "new",
-			args:    "",
-			session: &session,
+			name:     "new",
+			args:     "",
+			session:  &session,
 			settings: &settings,
-			model:   "test-model",
-			tools:   &tools,
+			model:    "test-model",
+			tools:    &tools,
 		};
 		let result = execute_command(&ctx).await.unwrap();
 		assert!(matches!(result, CommandResult::NewSession));
@@ -160,12 +156,12 @@ mod tests {
 		let settings = test_settings();
 		let tools = ToolRegistry::new();
 		let ctx = CommandContext {
-			name:    "model",
-			args:    "",
-			session: &session,
+			name:     "model",
+			args:     "",
+			session:  &session,
 			settings: &settings,
-			model:   "claude-sonnet-4-5-20250929",
-			tools:   &tools,
+			model:    "claude-sonnet-4-5-20250929",
+			tools:    &tools,
 		};
 		let result = execute_command(&ctx).await.unwrap();
 		match result {
@@ -182,12 +178,12 @@ mod tests {
 		let settings = test_settings();
 		let tools = ToolRegistry::new();
 		let ctx = CommandContext {
-			name:    "model",
-			args:    "claude-opus-4-20250514",
-			session: &session,
+			name:     "model",
+			args:     "claude-opus-4-20250514",
+			session:  &session,
 			settings: &settings,
-			model:   "claude-sonnet-4-5-20250929",
-			tools:   &tools,
+			model:    "claude-sonnet-4-5-20250929",
+			tools:    &tools,
 		};
 		let result = execute_command(&ctx).await.unwrap();
 		match result {
@@ -204,12 +200,12 @@ mod tests {
 		let settings = test_settings();
 		let tools = ToolRegistry::new();
 		let ctx = CommandContext {
-			name:    "session",
-			args:    "",
-			session: &session,
+			name:     "session",
+			args:     "",
+			session:  &session,
 			settings: &settings,
-			model:   "test-model",
-			tools:   &tools,
+			model:    "test-model",
+			tools:    &tools,
 		};
 		let result = execute_command(&ctx).await.unwrap();
 		match result {
@@ -229,12 +225,12 @@ mod tests {
 		let settings = test_settings();
 		let tools = ToolRegistry::new();
 		let ctx = CommandContext {
-			name:    "copy",
-			args:    "",
-			session: &session,
+			name:     "copy",
+			args:     "",
+			session:  &session,
 			settings: &settings,
-			model:   "test-model",
-			tools:   &tools,
+			model:    "test-model",
+			tools:    &tools,
 		};
 		let result = execute_command(&ctx).await.unwrap();
 		match result {
@@ -251,12 +247,12 @@ mod tests {
 		let settings = test_settings();
 		let tools = ToolRegistry::new();
 		let ctx = CommandContext {
-			name:    "dump",
-			args:    "",
-			session: &session,
+			name:     "dump",
+			args:     "",
+			session:  &session,
 			settings: &settings,
-			model:   "test-model",
-			tools:   &tools,
+			model:    "test-model",
+			tools:    &tools,
 		};
 		let result = execute_command(&ctx).await.unwrap();
 		match result {
@@ -273,12 +269,12 @@ mod tests {
 		let settings = test_settings();
 		let tools = ToolRegistry::new();
 		let ctx = CommandContext {
-			name:    "usage",
-			args:    "",
-			session: &session,
+			name:     "usage",
+			args:     "",
+			session:  &session,
 			settings: &settings,
-			model:   "test-model",
-			tools:   &tools,
+			model:    "test-model",
+			tools:    &tools,
 		};
 		let result = execute_command(&ctx).await.unwrap();
 		match result {
@@ -295,12 +291,12 @@ mod tests {
 		let settings = test_settings();
 		let tools = ToolRegistry::new();
 		let ctx = CommandContext {
-			name:    "hotkeys",
-			args:    "",
-			session: &session,
+			name:     "hotkeys",
+			args:     "",
+			session:  &session,
 			settings: &settings,
-			model:   "test-model",
-			tools:   &tools,
+			model:    "test-model",
+			tools:    &tools,
 		};
 		let result = execute_command(&ctx).await.unwrap();
 		match result {
@@ -320,12 +316,12 @@ mod tests {
 		let settings = test_settings();
 		let tools = ToolRegistry::new();
 		let ctx = CommandContext {
-			name:    "move",
-			args:    "",
-			session: &session,
+			name:     "move",
+			args:     "",
+			session:  &session,
 			settings: &settings,
-			model:   "test-model",
-			tools:   &tools,
+			model:    "test-model",
+			tools:    &tools,
 		};
 		let result = execute_command(&ctx).await.unwrap();
 		match result {
@@ -342,12 +338,12 @@ mod tests {
 		let settings = test_settings();
 		let tools = ToolRegistry::new();
 		let ctx = CommandContext {
-			name:    "move",
-			args:    "/tmp",
-			session: &session,
+			name:     "move",
+			args:     "/tmp",
+			session:  &session,
 			settings: &settings,
-			model:   "test-model",
-			tools:   &tools,
+			model:    "test-model",
+			tools:    &tools,
 		};
 		let result = execute_command(&ctx).await.unwrap();
 		assert!(matches!(result, CommandResult::ChangeDir(_)));
@@ -359,12 +355,12 @@ mod tests {
 		let settings = test_settings();
 		let tools = ToolRegistry::new();
 		let ctx = CommandContext {
-			name:    "move",
-			args:    "/nonexistent_path_12345",
-			session: &session,
+			name:     "move",
+			args:     "/nonexistent_path_12345",
+			session:  &session,
 			settings: &settings,
-			model:   "test-model",
-			tools:   &tools,
+			model:    "test-model",
+			tools:    &tools,
 		};
 		let result = execute_command(&ctx).await.unwrap();
 		match result {
@@ -381,12 +377,12 @@ mod tests {
 		let settings = test_settings();
 		let tools = ToolRegistry::new();
 		let ctx = CommandContext {
-			name:    "compact",
-			args:    "",
-			session: &session,
+			name:     "compact",
+			args:     "",
+			session:  &session,
 			settings: &settings,
-			model:   "test-model",
-			tools:   &tools,
+			model:    "test-model",
+			tools:    &tools,
 		};
 		let result = execute_command(&ctx).await.unwrap();
 		assert!(matches!(result, CommandResult::Compact(None)));
@@ -398,12 +394,12 @@ mod tests {
 		let settings = test_settings();
 		let tools = ToolRegistry::new();
 		let ctx = CommandContext {
-			name:    "compact",
-			args:    "focus on errors",
-			session: &session,
+			name:     "compact",
+			args:     "focus on errors",
+			session:  &session,
 			settings: &settings,
-			model:   "test-model",
-			tools:   &tools,
+			model:    "test-model",
+			tools:    &tools,
 		};
 		let result = execute_command(&ctx).await.unwrap();
 		match result {
@@ -420,12 +416,12 @@ mod tests {
 		let settings = test_settings();
 		let tools = ToolRegistry::new();
 		let ctx = CommandContext {
-			name:    "plan",
-			args:    "",
-			session: &session,
+			name:     "plan",
+			args:     "",
+			session:  &session,
 			settings: &settings,
-			model:   "test-model",
-			tools:   &tools,
+			model:    "test-model",
+			tools:    &tools,
 		};
 		let result = execute_command(&ctx).await.unwrap();
 		match result {
@@ -442,12 +438,12 @@ mod tests {
 		let settings = test_settings();
 		let tools = ToolRegistry::new();
 		let ctx = CommandContext {
-			name:    "export",
-			args:    "",
-			session: &session,
+			name:     "export",
+			args:     "",
+			session:  &session,
 			settings: &settings,
-			model:   "test-model",
-			tools:   &tools,
+			model:    "test-model",
+			tools:    &tools,
 		};
 		let result = execute_command(&ctx).await.unwrap();
 		match result {
@@ -464,12 +460,12 @@ mod tests {
 		let settings = test_settings();
 		let tools = ToolRegistry::new();
 		let ctx = CommandContext {
-			name:    "debug",
-			args:    "",
-			session: &session,
+			name:     "debug",
+			args:     "",
+			session:  &session,
 			settings: &settings,
-			model:   "test-model",
-			tools:   &tools,
+			model:    "test-model",
+			tools:    &tools,
 		};
 		let result = execute_command(&ctx).await.unwrap();
 		match result {
@@ -490,12 +486,12 @@ mod tests {
 		let settings = test_settings();
 		let tools = ToolRegistry::new();
 		let ctx = CommandContext {
-			name:    "fork",
-			args:    "",
-			session: &session,
+			name:     "fork",
+			args:     "",
+			session:  &session,
 			settings: &settings,
-			model:   "test-model",
-			tools:   &tools,
+			model:    "test-model",
+			tools:    &tools,
 		};
 		let result = execute_command(&ctx).await.unwrap();
 		assert!(matches!(result, CommandResult::Fork));
@@ -507,12 +503,12 @@ mod tests {
 		let settings = test_settings();
 		let tools = ToolRegistry::new();
 		let ctx = CommandContext {
-			name:    "nonexistent",
-			args:    "",
-			session: &session,
+			name:     "nonexistent",
+			args:     "",
+			session:  &session,
 			settings: &settings,
-			model:   "test-model",
-			tools:   &tools,
+			model:    "test-model",
+			tools:    &tools,
 		};
 		let result = execute_command(&ctx).await.unwrap();
 		match result {
