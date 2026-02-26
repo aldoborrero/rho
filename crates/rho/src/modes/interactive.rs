@@ -738,18 +738,27 @@ pub async fn run_interactive(
 								.await
 								{
 									Ok(result) => {
-										let _ = session.append_compaction(
+										match session.append_compaction(
 											&result.summary,
 											result.short_summary.as_deref(),
 											&result.first_kept_entry_id,
 											result.tokens_before,
 											result.details,
-										);
-										let msg = result
-											.short_summary
-											.as_deref()
-											.unwrap_or("Conversation compacted.");
-										show_chat_message(&mut app, &format!("Auto-compacted: {msg}"));
+										) {
+											Ok(()) => {
+												let msg = result
+													.short_summary
+													.as_deref()
+													.unwrap_or("Conversation compacted.");
+												show_chat_message(&mut app, &format!("Auto-compacted: {msg}"));
+											},
+											Err(e) => {
+												show_chat_message(
+													&mut app,
+													&format!("Auto-compaction succeeded but failed to persist: {e}"),
+												);
+											},
+										}
 									},
 									Err(e) => {
 										show_chat_message(&mut app, &format!("Auto-compaction failed: {e}"));
