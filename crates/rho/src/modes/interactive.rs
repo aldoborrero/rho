@@ -685,8 +685,7 @@ pub async fn run_interactive(
 							app.update_status_border(terminal.columns());
 						}
 						session.append(Message::Assistant(message.clone())).await?;
-						app.chat.finish_streaming();
-						app.chat.add_message(Message::Assistant(message));
+						app.chat.finish_streaming_with_message(Message::Assistant(message));
 					},
 					AgentEvent::ToolResultComplete { tool_use_id, content, is_error } => {
 						let tool_msg =

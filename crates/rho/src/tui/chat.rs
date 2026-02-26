@@ -163,6 +163,20 @@ impl ChatComponent {
 		self.tool_executing = None;
 	}
 
+	/// Atomically finish streaming and commit the final message.
+	///
+	/// Unlike calling `finish_streaming()` then `add_message()` separately,
+	/// this ensures the streaming buffer and committed message are never
+	/// both absent in the same render frame (no visual flash).
+	pub fn finish_streaming_with_message(&mut self, message: Message) {
+		self.is_streaming = false;
+		self.streaming_text.clear();
+		self.streaming_thinking.clear();
+		self.loader.stop();
+		self.tool_executing = None;
+		self.items.push(ChatItem::Message(message));
+	}
+
 	/// Commit any accumulated streaming text as a partial assistant message.
 	///
 	/// Called on cancel so the user can still see what was generated before
