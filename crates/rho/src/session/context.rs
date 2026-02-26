@@ -65,7 +65,32 @@ pub fn build_context(branch: &[&SessionEntry]) -> SessionContext {
 	for entry in entries_to_process {
 		match entry {
 			SessionEntry::Message(msg_entry) => {
-				messages.push(msg_entry.message.clone());
+				match &msg_entry.message {
+					Message::BashExecution(bash) if bash.exclude_from_context => {
+						// Excluded from LLM context (!! command)
+					},
+					Message::BashExecution(bash) => {
+						// Convert to user message for LLM context
+						let text = format!(
+							"$ {}\n{}{}",
+							bash.command,
+							bash.output,
+							if bash.exit_code.is_none_or(|c| c != 0) {
+								format!(
+									"\n[exit code: {}]",
+									bash.exit_code
+										.map_or("unknown".to_owned(), |c| c.to_string())
+								)
+							} else {
+								String::new()
+							}
+						);
+						messages.push(Message::User(UserMessage { content: text }));
+					},
+					_ => {
+						messages.push(msg_entry.message.clone());
+					},
+				}
 			},
 			SessionEntry::ThinkingLevelChange(tlc) => {
 				thinking_level.clone_from(&tlc.thinking_level);
@@ -394,6 +419,69 @@ mod tests {
 
 		assert_eq!(ctx.models.len(), 1);
 		assert_eq!(ctx.models.get("default").unwrap(), "anthropic/claude-sonnet-4-20250514");
+	}
+
+	#[test]
+	fn test_build_context_bash_execution_included() {
+		use crate::ai::types::BashExecutionMessage;
+
+		let e1 = msg_entry("a1", None, "Hello");
+		let e2 = SessionEntry::Message(SessionMessageEntry {
+			id:        "a2".to_owned(),
+			parent_id: Some("a1".to_owned()),
+			timestamp: ts(),
+			message:   Message::BashExecution(BashExecutionMessage {
+				command:              "ls".to_owned(),
+				output:               "file.txt".to_owned(),
+				exit_code:            Some(0),
+				cancelled:            false,
+				truncated:            false,
+				exclude_from_context: false,
+				timestamp:            1_706_000_000,
+			}),
+		});
+		let e3 = msg_entry("a3", Some("a2"), "After bash");
+
+		let branch: Vec<&SessionEntry> = vec![&e3, &e2, &e1];
+		let ctx = build_context(&branch);
+
+		// Should have 3 messages: Hello, bash output (as user msg), After bash
+		assert_eq!(ctx.messages.len(), 3);
+		match &ctx.messages[1] {
+			Message::User(u) => {
+				assert!(u.content.contains("ls"), "Should contain command");
+				assert!(u.content.contains("file.txt"), "Should contain output");
+			},
+			_ => panic!("BashExecution should be converted to User message"),
+		}
+	}
+
+	#[test]
+	fn test_build_context_bash_execution_excluded() {
+		use crate::ai::types::BashExecutionMessage;
+
+		let e1 = msg_entry("a1", None, "Hello");
+		let e2 = SessionEntry::Message(SessionMessageEntry {
+			id:        "a2".to_owned(),
+			parent_id: Some("a1".to_owned()),
+			timestamp: ts(),
+			message:   Message::BashExecution(BashExecutionMessage {
+				command:              "ls".to_owned(),
+				output:               "file.txt".to_owned(),
+				exit_code:            Some(0),
+				cancelled:            false,
+				truncated:            false,
+				exclude_from_context: true,
+				timestamp:            1_706_000_000,
+			}),
+		});
+		let e3 = msg_entry("a3", Some("a2"), "After bash");
+
+		let branch: Vec<&SessionEntry> = vec![&e3, &e2, &e1];
+		let ctx = build_context(&branch);
+
+		// Should have 2 messages: Hello, After bash (bash excluded)
+		assert_eq!(ctx.messages.len(), 2);
 	}
 
 	#[test]
