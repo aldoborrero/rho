@@ -317,9 +317,12 @@ impl SessionStorage for FileSessionStorage {
 		let mut buf = vec![0u8; max_bytes];
 		let n = file.read(&mut buf)?;
 		buf.truncate(n);
-		// Find last valid UTF-8 boundary
-		let s = String::from_utf8_lossy(&buf);
-		Ok(s.into_owned())
+		// Truncate at the last valid UTF-8 char boundary instead of lossy conversion.
+		let mut end = n;
+		while end > 0 && std::str::from_utf8(&buf[..end]).is_err() {
+			end -= 1;
+		}
+		Ok(String::from_utf8(buf[..end].to_vec()).expect("truncated at valid UTF-8 boundary"))
 	}
 
 	fn write_text(&self, path: &Path, content: &str) -> Result<()> {
