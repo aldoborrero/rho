@@ -4,7 +4,7 @@
 //! with box-drawing vertical separators. Segments are dropped from the right
 //! when the total width exceeds the available space.
 
-use std::rc::Rc;
+use std::{rc::Rc, time::Duration};
 
 use rho_tui::{
 	components::editor::EditorTopBorder,
@@ -20,6 +20,9 @@ pub struct StatusLineState {
 	pub input_tokens:   u32,
 	pub output_tokens:  u32,
 	pub session_id:     Option<String>,
+	pub work_start:     Option<std::time::Instant>,
+	pub working_phase:  Option<String>,
+	pub final_duration: Option<Duration>,
 }
 
 /// Status line component that renders segments into an `EditorTopBorder`.
@@ -43,6 +46,9 @@ impl StatusLineComponent {
 				input_tokens:   0,
 				output_tokens:  0,
 				session_id:     None,
+				work_start:     None,
+				working_phase:  None,
+				final_duration: None,
 			},
 		}
 	}
@@ -72,11 +78,43 @@ impl StatusLineComponent {
 		self.state.session_id = Some(id.to_owned());
 	}
 
+	/// Begin tracking work — records start time, sets phase to "Thinking".
+	pub fn start_working(&mut self) {
+		self.state.work_start = Some(std::time::Instant::now());
+		self.state.working_phase = Some("Thinking".to_owned());
+		self.state.final_duration = None;
+	}
+
+	/// Update the current working phase label (e.g. "Reading file").
+	pub fn set_working_phase(&mut self, phase: &str) {
+		self.state.working_phase = Some(phase.to_owned());
+	}
+
+	/// Stop tracking work — computes final duration, clears active state.
+	pub fn finish_working(&mut self) {
+		if let Some(start) = self.state.work_start.take() {
+			self.state.final_duration = Some(start.elapsed());
+		}
+		self.state.working_phase = None;
+	}
+
+	/// Clear all work-status fields (called when the user sends a new message).
+	pub fn clear_work_status(&mut self) {
+		self.state.work_start = None;
+		self.state.working_phase = None;
+		self.state.final_duration = None;
+	}
+
+	/// Returns `true` while the agent is actively working.
+	pub const fn is_working(&self) -> bool {
+		self.state.work_start.is_some()
+	}
+
 	/// Produce an `EditorTopBorder` for the editor's top border.
 	///
-	/// Segments are rendered left-to-right: `pi │ model │ path │ git │ tokens`.
-	/// If all segments exceed `width`, segments are dropped from the right
-	/// (tokens first, then git, then path).
+	/// Segments are rendered left-to-right: `pi │ model │ path │ git │ working │
+	/// tokens`. If all segments exceed `width`, segments are dropped from the
+	/// right (tokens first, then working, then git, then path).
 	pub fn get_top_border(&self, width: u16) -> EditorTopBorder {
 		let theme = &self.theme;
 		let sep = theme.fg(ThemeColor::StatusLineSep, " \u{2502} ");
@@ -97,6 +135,9 @@ impl StatusLineComponent {
 			segments.push(seg);
 		}
 		if let Some(seg) = git_segment {
+			segments.push(seg);
+		}
+		if let Some(seg) = build_working_segment(theme, &self.state) {
 			segments.push(seg);
 		}
 		if let Some(seg) = token_segment {
@@ -182,6 +223,32 @@ fn build_git_segment(theme: &Theme, state: &StatusLineState) -> Option<(String, 
 	Some((styled, width))
 }
 
+fn build_working_segment(theme: &Theme, state: &StatusLineState) -> Option<(String, usize)> {
+	if let Some(start) = state.work_start {
+		// Active work — "⟳ 12s Thinking"
+		let elapsed = start.elapsed();
+		let time_str = format_duration(elapsed).unwrap_or_default();
+		let phase = state.working_phase.as_deref().unwrap_or("Thinking");
+		let text = if time_str.is_empty() {
+			format!("\u{27f3} {phase}")
+		} else {
+			format!("\u{27f3} {time_str} {phase}")
+		};
+		let width = rho_text::width::visible_width_str(&text);
+		let styled = theme.fg(ThemeColor::StatusLineContext, &text);
+		Some((styled, width))
+	} else if let Some(duration) = state.final_duration {
+		// Completed — "⏳ Worked for 42s"
+		let time_str = format_duration(duration)?;
+		let text = format!("\u{23f3} Worked for {time_str}");
+		let width = rho_text::width::visible_width_str(&text);
+		let styled = theme.fg(ThemeColor::StatusLineGitClean, &text);
+		Some((styled, width))
+	} else {
+		None
+	}
+}
+
 fn build_token_segment(theme: &Theme, state: &StatusLineState) -> Option<(String, usize)> {
 	let total = state.input_tokens + state.output_tokens;
 	if total == 0 {
@@ -199,18 +266,53 @@ fn build_token_segment(theme: &Theme, state: &StatusLineState) -> Option<(String
 
 // ── Helpers ────────────────────────────────────────────────────────
 
-/// Abbreviate a path to at most `max_len` visible characters.
-/// If truncation is needed, the path is prefixed with "…" (U+2026).
-/// Matches the TypeScript `pathSegment` implementation in segments.ts.
-fn abbreviate_path(path: &str, max_len: usize) -> String {
-	let char_count = path.chars().count();
-	if char_count <= max_len {
+/// Format a duration as a compact human-readable string.
+///
+/// Returns `None` for sub-second durations.
+fn format_duration(d: Duration) -> Option<String> {
+	let secs = d.as_secs();
+	if secs == 0 {
+		return None;
+	}
+	if secs < 60 {
+		return Some(format!("{secs}s"));
+	}
+	let mins = secs / 60;
+	let rem = secs % 60;
+	if mins < 60 {
+		return if rem == 0 {
+			Some(format!("{mins}m"))
+		} else {
+			Some(format!("{mins}m{rem}s"))
+		};
+	}
+	let hours = mins / 60;
+	let rem_mins = mins % 60;
+	Some(format!("{hours}h{rem_mins}m"))
+}
+
+/// Abbreviate a path to at most `max_width` visible columns.
+/// If truncation is needed, the path is prefixed with "\u{2026}" (U+2026, 1 column wide).
+/// Uses `visible_width_str` so CJK / emoji / wide characters are measured correctly.
+fn abbreviate_path(path: &str, max_width: usize) -> String {
+	let width = rho_text::width::visible_width_str(path);
+	if width <= max_width {
 		return path.to_owned();
 	}
-	let ellipsis = '\u{2026}'; // …
-	let slice_len = max_len.saturating_sub(1); // 1 char for ellipsis
-	let suffix: String = path.chars().skip(char_count - slice_len).collect();
-	format!("{ellipsis}{suffix}")
+	let ellipsis = "\u{2026}"; // …
+	// Remove characters from the front until it fits.
+	let excess = width - max_width + 1; // +1 for ellipsis (1 column wide)
+	let mut trimmed = 0;
+	let mut byte_offset = 0;
+	for ch in path.chars() {
+		let ch_width = rho_text::width::visible_width_str(&ch.to_string());
+		trimmed += ch_width;
+		byte_offset += ch.len_utf8();
+		if trimmed >= excess {
+			break;
+		}
+	}
+	format!("{ellipsis}{}", &path[byte_offset..])
 }
 
 /// Format a token count as a compact human-readable string.
@@ -380,7 +482,25 @@ mod tests {
 		let path = "/home/user/very/long/path/to/some/deeply/nested/directory/structure";
 		let result = abbreviate_path(path, 40);
 		assert!(result.starts_with('\u{2026}')); // …
-		assert_eq!(result.chars().count(), 40);
+		let width = rho_text::width::visible_width_str(&result);
+		assert!(
+			width <= 40,
+			"Expected width <= 40, got {width} for '{result}'"
+		);
+	}
+
+	#[test]
+	fn test_abbreviate_path_wide_chars() {
+		// CJK chars are 2 columns wide. "ああああ" = 4 chars, 8 columns.
+		let path = "/ああああ/test";
+		// Char count is 11, but visible width is 15 (7 ASCII + 4*2 CJK).
+		// With max_len=12, char-based would not truncate, but width-based should.
+		let result = abbreviate_path(path, 12);
+		let width = rho_text::width::visible_width_str(&result);
+		assert!(
+			width <= 12,
+			"Expected width <= 12, got {width} for '{result}'"
+		);
 	}
 
 	// ── Width calculation ──────────────────────────────────────────
@@ -433,5 +553,85 @@ mod tests {
 		// Should not contain arrow characters when no tokens
 		assert!(!border.content.contains('\u{2191}'));
 		assert!(!border.content.contains('\u{2193}'));
+	}
+
+	// ── Duration formatting ───────────────────────────────────────
+
+	#[test]
+	fn test_format_duration_zero() {
+		assert_eq!(format_duration(Duration::from_secs(0)), None);
+	}
+
+	#[test]
+	fn test_format_duration_subsecond() {
+		assert_eq!(format_duration(Duration::from_millis(999)), None);
+	}
+
+	#[test]
+	fn test_format_duration_seconds() {
+		assert_eq!(format_duration(Duration::from_secs(1)), Some("1s".to_owned()));
+		assert_eq!(format_duration(Duration::from_secs(42)), Some("42s".to_owned()));
+		assert_eq!(format_duration(Duration::from_secs(59)), Some("59s".to_owned()));
+	}
+
+	#[test]
+	fn test_format_duration_minutes() {
+		assert_eq!(format_duration(Duration::from_secs(60)), Some("1m".to_owned()));
+		assert_eq!(format_duration(Duration::from_secs(90)), Some("1m30s".to_owned()));
+		assert_eq!(format_duration(Duration::from_secs(3599)), Some("59m59s".to_owned()));
+	}
+
+	#[test]
+	fn test_format_duration_hours() {
+		assert_eq!(format_duration(Duration::from_secs(3600)), Some("1h0m".to_owned()));
+		assert_eq!(format_duration(Duration::from_secs(5400)), Some("1h30m".to_owned()));
+	}
+
+	// ── Working segment ───────────────────────────────────────────
+
+	#[test]
+	fn test_working_segment_while_active() {
+		let theme = test_theme();
+		let mut status = StatusLineComponent::new(Rc::clone(&theme), "model");
+		status.start_working();
+		assert!(status.is_working());
+		let border = status.get_top_border(120);
+		assert!(border.content.contains("Thinking"));
+	}
+
+	#[test]
+	fn test_working_segment_custom_phase() {
+		let theme = test_theme();
+		let mut status = StatusLineComponent::new(Rc::clone(&theme), "model");
+		status.start_working();
+		status.set_working_phase("Reading file");
+		let border = status.get_top_border(120);
+		assert!(border.content.contains("Reading file"));
+	}
+
+	#[test]
+	fn test_working_segment_after_done() {
+		let theme = test_theme();
+		let mut status = StatusLineComponent::new(Rc::clone(&theme), "model");
+		// Simulate work that took some time.
+		status.state.work_start = Some(std::time::Instant::now() - Duration::from_secs(42));
+		status.finish_working();
+		assert!(!status.is_working());
+		let border = status.get_top_border(120);
+		assert!(border.content.contains("Worked for 42s"));
+	}
+
+	#[test]
+	fn test_clear_work_status() {
+		let theme = test_theme();
+		let mut status = StatusLineComponent::new(Rc::clone(&theme), "model");
+		status.state.work_start = Some(std::time::Instant::now() - Duration::from_secs(10));
+		status.finish_working();
+		assert!(status.state.final_duration.is_some());
+
+		status.clear_work_status();
+		assert!(status.state.work_start.is_none());
+		assert!(status.state.working_phase.is_none());
+		assert!(status.state.final_duration.is_none());
 	}
 }
