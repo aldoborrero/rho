@@ -1,3 +1,8 @@
+use std::sync::{
+	Arc,
+	atomic::{AtomicBool, Ordering},
+};
+
 use rho_agent::{
 	agent_loop::{AgentConfig, ThinkingLevel},
 	events::{AgentEvent, AgentOutcome},
@@ -364,9 +369,14 @@ pub async fn run_interactive(
 	// We use crossterm's event::poll/read directly (thread-safe) rather than
 	// going through CrosstermTerminal::poll_event, because the terminal instance
 	// is needed on the main task for rendering.
+	let term_shutdown = Arc::new(AtomicBool::new(false));
+	let term_shutdown_clone = term_shutdown.clone();
 	let term_tx = tx.clone();
 	let _term_handle = tokio::task::spawn_blocking(move || {
 		loop {
+			if term_shutdown_clone.load(Ordering::Relaxed) {
+				break;
+			}
 			// Poll crossterm events with 50ms timeout.
 			if crossterm::event::poll(std::time::Duration::from_millis(50)).unwrap_or(false) {
 				match crossterm::event::read() {
@@ -855,6 +865,9 @@ pub async fn run_interactive(
 		app.tui.request_render();
 		app.render_to_tui(&mut terminal)?;
 	}
+
+	// Signal the terminal reader thread to stop.
+	term_shutdown.store(true, Ordering::Relaxed);
 
 	// Restore the default panic hook (the custom one is no longer needed
 	// since we're about to stop raw mode).
