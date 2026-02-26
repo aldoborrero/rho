@@ -61,6 +61,8 @@ pub struct ChatComponent {
 	tools_expanded:     bool,
 	/// Side-table cache for rendered tool results, keyed by `tool_use_id`.
 	render_cache:       HashMap<String, CachedRender>,
+	/// Cache: tool_use_id -> tool_name, populated in `add_message()`.
+	tool_name_cache:    HashMap<String, String>,
 	/// Animated spinner for loading states.
 	loader:             Loader,
 	/// Currently executing tool name (for spinner message).
@@ -93,6 +95,7 @@ impl ChatComponent {
 			symbols,
 			tools_expanded: false,
 			render_cache: HashMap::new(),
+			tool_name_cache: HashMap::new(),
 			loader,
 			tool_executing: None,
 			streaming_bang: None,
@@ -100,6 +103,14 @@ impl ChatComponent {
 	}
 
 	pub fn add_message(&mut self, message: Message) {
+		// Populate tool_name_cache for ToolUse blocks.
+		if let Message::Assistant(ref a) = message {
+			for block in &a.content {
+				if let ContentBlock::ToolUse { id, name, .. } = block {
+					self.tool_name_cache.insert(id.clone(), name.clone());
+				}
+			}
+		}
 		self.items.push(ChatItem::Message(message));
 	}
 
@@ -182,6 +193,14 @@ impl ChatComponent {
 		self.streaming_thinking.clear();
 		self.loader.stop();
 		self.tool_executing = None;
+		// Populate tool_name_cache for ToolUse blocks.
+		if let Message::Assistant(ref a) = message {
+			for block in &a.content {
+				if let ContentBlock::ToolUse { id, name, .. } = block {
+					self.tool_name_cache.insert(id.clone(), name.clone());
+				}
+			}
+		}
 		self.items.push(ChatItem::Message(message));
 	}
 
@@ -219,6 +238,7 @@ impl ChatComponent {
 		self.is_streaming = false;
 		self.scroll_offset = 0;
 		self.render_cache.clear();
+		self.tool_name_cache.clear();
 		self.loader.stop();
 		self.tool_executing = None;
 		self.streaming_bang = None;
@@ -267,11 +287,9 @@ impl ChatComponent {
 		None
 	}
 
-	/// Look up the tool name for a given `tool_use_id`.
-	fn tool_name_for_id(&self, tool_use_id: &str) -> Option<String> {
-		self
-			.find_tool_use_data(tool_use_id)
-			.map(|(name, _)| name.to_owned())
+	/// Look up the tool name for a given `tool_use_id` (O(1) via cache).
+	fn tool_name_for_id(&self, tool_use_id: &str) -> Option<&str> {
+		self.tool_name_cache.get(tool_use_id).map(String::as_str)
 	}
 
 	/// Check whether a `ToolResult` message exists for the given `tool_use_id`.
@@ -485,8 +503,8 @@ impl ChatComponent {
 	/// Check whether item at index `i` is a Read tool result.
 	fn is_read_tool_result(&self, i: usize) -> bool {
 		matches!(&self.items[i], ChatItem::Message(Message::ToolResult(t))
-			if self.tool_name_for_id(&t.tool_use_id).as_deref() == Some("Read")
-				|| self.tool_name_for_id(&t.tool_use_id).as_deref() == Some("read"))
+			if self.tool_name_for_id(&t.tool_use_id) == Some("Read")
+				|| self.tool_name_for_id(&t.tool_use_id) == Some("read"))
 	}
 
 	/// Collect consecutive Read tool results starting at index `start`.
