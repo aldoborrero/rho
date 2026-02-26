@@ -46,7 +46,12 @@ impl Tool for BashTool {
 		})
 	}
 
-	async fn execute(&self, input: Value, cwd: &Path, cancel: &CancellationToken) -> anyhow::Result<ToolOutput> {
+	async fn execute(
+		&self,
+		input: Value,
+		cwd: &Path,
+		cancel: &CancellationToken,
+	) -> anyhow::Result<ToolOutput> {
 		let command = input
 			.get("command")
 			.and_then(Value::as_str)
@@ -63,7 +68,7 @@ impl Tool for BashTool {
 		let on_chunk: Box<dyn Fn(String) + Send + Sync> = Box::new(move |chunk: String| {
 			output_clone
 				.lock()
-				.expect("output mutex poisoned")
+				.unwrap_or_else(|e| e.into_inner())
 				.push_str(&chunk);
 		});
 
@@ -105,7 +110,7 @@ impl Tool for BashTool {
 					});
 				}
 
-				let mut text = output.lock().expect("output mutex poisoned").clone();
+				let mut text = output.lock().unwrap_or_else(|e| e.into_inner()).clone();
 				if text.len() > MAX_OUTPUT_BYTES {
 					text.truncate(MAX_OUTPUT_BYTES);
 					text.push_str("\n... (output truncated)");
