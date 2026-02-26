@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 /// File location: `~/.rho/agent/terminal-sessions/<terminal-id>`
 /// Content: `<cwd>\n<session-file-path>\n`
 ///
-/// This is best-effort: failures are silently ignored.
+/// This is best-effort: failures are logged to stderr but do not propagate.
 pub fn write_breadcrumb(cwd: &Path, session_file: &Path) {
 	let Some(terminal_id) = get_terminal_id() else {
 		return;
@@ -52,8 +52,19 @@ pub fn write_breadcrumb_to(
 ) {
 	let breadcrumb_file = breadcrumb_dir.join(terminal_id);
 	let content = format!("{}\n{}\n", cwd.display(), session_file.display());
-	let _ = std::fs::create_dir_all(breadcrumb_dir);
-	let _ = std::fs::write(&breadcrumb_file, content);
+	if let Err(e) = std::fs::create_dir_all(breadcrumb_dir) {
+		eprintln!(
+			"Warning: failed to create breadcrumb directory {}: {e}",
+			breadcrumb_dir.display()
+		);
+		return;
+	}
+	if let Err(e) = std::fs::write(&breadcrumb_file, content) {
+		eprintln!(
+			"Warning: failed to write breadcrumb file {}: {e}",
+			breadcrumb_file.display()
+		);
+	}
 }
 
 /// Read a breadcrumb from a specific directory (for testing).
