@@ -106,22 +106,25 @@ fn read_path<'a>(args: &'a Value) -> &'a str {
 		.unwrap_or("")
 }
 
-/// Render a standard bordered result block (shared by all non-inline
-/// renderers).
-#[allow(
-	clippy::too_many_arguments,
-	reason = "private helper consolidating 5 near-identical render_result bodies"
-)]
-fn render_result_block(
+/// Common setup for tool result blocks: state, icon, header, content
+/// processing.
+struct ToolBlockSetup {
+	header_text:  String,
+	header_width: usize,
+	state:        OutputBlockState,
+	collapsed:    Vec<String>,
+}
+
+/// Build the shared preamble used by both [`render_result_block`] and
+/// [`render_combined_block`].
+fn build_tool_block_setup(
 	tool_name: &str,
 	result: &ToolResultDisplay,
-	section_label: Option<&str>,
 	collapsed_lines: usize,
 	expanded_lines: usize,
 	expanded: bool,
 	theme: &Theme,
-	width: u16,
-) -> Vec<String> {
+) -> ToolBlockSetup {
 	let state = if result.is_error {
 		OutputBlockState::Error
 	} else {
@@ -141,16 +144,37 @@ fn render_result_block(
 	};
 	let content_lines: Vec<&str> = result.content.lines().collect();
 	let collapsed = collapse_lines(&content_lines, max_lines, theme);
+	ToolBlockSetup { header_text, header_width, state, collapsed }
+}
+
+/// Render a standard bordered result block (shared by all non-inline
+/// renderers).
+#[allow(
+	clippy::too_many_arguments,
+	reason = "private helper consolidating 5 near-identical render_result bodies"
+)]
+fn render_result_block(
+	tool_name: &str,
+	result: &ToolResultDisplay,
+	section_label: Option<&str>,
+	collapsed_lines: usize,
+	expanded_lines: usize,
+	expanded: bool,
+	theme: &Theme,
+	width: u16,
+) -> Vec<String> {
+	let setup =
+		build_tool_block_setup(tool_name, result, collapsed_lines, expanded_lines, expanded, theme);
 	let opts = OutputBlockOptions {
-		header: header_text,
-		header_width,
-		state,
+		header: setup.header_text,
+		header_width: setup.header_width,
+		state: setup.state,
 		sections: vec![OutputSection {
 			label: section_label.map(|l| theme.dim(l)),
-			lines: collapsed,
+			lines: setup.collapsed,
 		}],
-		border_style: make_border_style(theme, state),
-		bg_style: make_bg_style(theme, state),
+		border_style: make_border_style(theme, setup.state),
+		bg_style: make_bg_style(theme, setup.state),
 	};
 	render_output_block(&opts, width)
 }
@@ -172,39 +196,20 @@ fn render_combined_block(
 	theme: &Theme,
 	width: u16,
 ) -> Vec<String> {
-	let state = if result.is_error {
-		OutputBlockState::Error
-	} else {
-		OutputBlockState::Success
-	};
-	let icon = if result.is_error {
-		"\u{2718}"
-	} else {
-		"\u{2714}"
-	};
-	let header_text = theme.fg(ThemeColor::ToolTitle, &theme.bold(&format!("{icon} {tool_name}")));
-	let header_width = rho_text::width::visible_width_str(&header_text);
-	let max_lines = if expanded {
-		expanded_lines
-	} else {
-		collapsed_lines
-	};
-	let content_lines: Vec<&str> = result.content.lines().collect();
-	let collapsed = collapse_lines(&content_lines, max_lines, theme);
-
+	let setup =
+		build_tool_block_setup(tool_name, result, collapsed_lines, expanded_lines, expanded, theme);
 	let mut sections = call_sections;
 	sections.push(OutputSection {
 		label: result_label.map(|l| theme.dim(l)),
-		lines: collapsed,
+		lines: setup.collapsed,
 	});
-
 	let opts = OutputBlockOptions {
-		header: header_text,
-		header_width,
-		state,
+		header: setup.header_text,
+		header_width: setup.header_width,
+		state: setup.state,
 		sections,
-		border_style: make_border_style(theme, state),
-		bg_style: make_bg_style(theme, state),
+		border_style: make_border_style(theme, setup.state),
+		bg_style: make_bg_style(theme, setup.state),
 	};
 	render_output_block(&opts, width)
 }
