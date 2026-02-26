@@ -27,7 +27,7 @@ pub struct Settings {
 
 	/// Resolved at load time, not from TOML.
 	#[serde(skip)]
-	pub api_key: String,
+	pub api_key:  String,
 	/// Resolved at load time, not from TOML.
 	#[serde(skip)]
 	pub base_url: String,
@@ -57,9 +57,9 @@ pub struct ModelSettings {
 	/// Default model (used when no role is specified).
 	pub default: String,
 	/// Fast/cheap model.
-	pub smol: String,
+	pub smol:    String,
 	/// Thinking/powerful model.
-	pub slow: String,
+	pub slow:    String,
 }
 
 impl Default for ModelSettings {
@@ -85,15 +85,12 @@ pub struct AgentSettings {
 
 impl Default for AgentSettings {
 	fn default() -> Self {
-		Self {
-			max_tokens:  8192,
-			thinking:    "off".to_owned(),
-			temperature: -1.0,
-		}
+		Self { max_tokens: 8192, thinking: "off".to_owned(), temperature: -1.0 }
 	}
 }
 
-/// Compaction settings (replaces the local `compaction::settings::CompactionSettings`).
+/// Compaction settings (replaces the local
+/// `compaction::settings::CompactionSettings`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CompactionSettings {
@@ -244,9 +241,9 @@ fn load_toml_value(path: Option<&Path>) -> toml::Value {
 		return toml::Value::Table(toml::map::Map::new());
 	};
 	match std::fs::read_to_string(path) {
-		Ok(contents) => contents.parse::<toml::Value>().unwrap_or_else(|_| {
-			toml::Value::Table(toml::map::Map::new())
-		}),
+		Ok(contents) => contents
+			.parse::<toml::Value>()
+			.unwrap_or_else(|_| toml::Value::Table(toml::map::Map::new())),
 		Err(_) => toml::Value::Table(toml::map::Map::new()),
 	}
 }
@@ -306,6 +303,9 @@ fn set_dotted(root: &mut toml::Value, path: &str, raw: &str) -> Result<()> {
 
 /// Remove a key at a dotted path.
 fn remove_dotted(root: &mut toml::Value, path: &str) {
+	if path.is_empty() {
+		return;
+	}
 	let parts: Vec<&str> = path.split('.').collect();
 	let mut current = root;
 	for &key in &parts[..parts.len() - 1] {
@@ -315,8 +315,9 @@ fn remove_dotted(root: &mut toml::Value, path: &str) {
 		}
 	}
 	if let Some(tbl) = current.as_table_mut() {
-		let leaf_key = parts.last().expect("path must not be empty");
-		tbl.remove(*leaf_key);
+		if let Some(leaf_key) = parts.last() {
+			tbl.remove(*leaf_key);
+		}
 	}
 }
 
@@ -355,7 +356,8 @@ fn toml_value_to_string(v: &toml::Value) -> String {
 	}
 }
 
-/// Return all settings as a flat list of `(dotted_key, value)` pairs for display.
+/// Return all settings as a flat list of `(dotted_key, value)` pairs for
+/// display.
 pub fn list_all() -> Vec<(String, String)> {
 	let mut merged = load_toml_value(global_config_path().as_deref());
 	if let Some(project_path) = project_config_path() {
@@ -467,14 +469,25 @@ mod tests {
 	}
 
 	#[test]
+	fn remove_dotted_empty_path_does_not_panic() {
+		let mut value = toml::Value::Table(toml::map::Map::new());
+		// Insert a key named "" to verify it is NOT removed by an empty path call.
+		value
+			.as_table_mut()
+			.unwrap()
+			.insert(String::new(), toml::Value::Boolean(true));
+		// Must not panic — should be a no-op.
+		remove_dotted(&mut value, "");
+		// The empty-string key should still be present (not accidentally removed).
+		assert!(value.as_table().unwrap().contains_key(""));
+	}
+
+	#[test]
 	fn parse_toml_value_types() {
 		assert_eq!(parse_toml_value("true"), toml::Value::Boolean(true));
 		assert_eq!(parse_toml_value("42"), toml::Value::Integer(42));
 		assert_eq!(parse_toml_value("3.14"), toml::Value::Float(3.14));
-		assert_eq!(
-			parse_toml_value("hello"),
-			toml::Value::String("hello".to_owned())
-		);
+		assert_eq!(parse_toml_value("hello"), toml::Value::String("hello".to_owned()));
 	}
 
 	#[test]
@@ -490,8 +503,14 @@ mod tests {
 		.unwrap();
 		let mut out = Vec::new();
 		flatten_toml("", &value, &mut out);
-		assert!(out.iter().any(|(k, v)| k == "model.default" && v == "sonnet"));
-		assert!(out.iter().any(|(k, v)| k == "agent.max_tokens" && v == "8192"));
+		assert!(
+			out.iter()
+				.any(|(k, v)| k == "model.default" && v == "sonnet")
+		);
+		assert!(
+			out.iter()
+				.any(|(k, v)| k == "agent.max_tokens" && v == "8192")
+		);
 	}
 
 	#[test]
