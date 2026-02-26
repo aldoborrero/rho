@@ -10,8 +10,8 @@ pub enum InputAction<'a> {
 	SlashCommand { name: &'static str, args: &'a str },
 	/// A `/`-prefixed input that didn't match any registered command.
 	UnknownCommand(&'a str),
-	/// A `!`-prefixed shell command.
-	BangCommand(&'a str),
+	/// A `!`-prefixed shell command (`!!` excludes from LLM context).
+	BangCommand { cmd: &'a str, exclude_from_context: bool },
 	/// Normal message to send to the agent.
 	UserMessage(&'a str),
 	/// Empty input, ignore.
@@ -34,8 +34,11 @@ pub fn route_input(text: &str) -> InputAction<'_> {
 		};
 	}
 
-	if text.starts_with('!') && !text.starts_with("!!") {
-		return InputAction::BangCommand(&text[1..]);
+	if text.starts_with("!!") {
+		return InputAction::BangCommand { cmd: &text[2..], exclude_from_context: true };
+	}
+	if text.starts_with('!') {
+		return InputAction::BangCommand { cmd: &text[1..], exclude_from_context: false };
 	}
 
 	InputAction::UserMessage(text)
@@ -90,20 +93,33 @@ mod tests {
 	#[test]
 	fn bang_command() {
 		match route_input("!ls -la") {
-			InputAction::BangCommand(cmd) => {
+			InputAction::BangCommand { cmd, exclude_from_context } => {
 				assert_eq!(cmd, "ls -la");
+				assert!(!exclude_from_context);
 			},
 			_ => panic!("Expected BangCommand"),
 		}
 	}
 
 	#[test]
-	fn double_bang_is_user_message() {
-		match route_input("!!something") {
-			InputAction::UserMessage(text) => {
-				assert_eq!(text, "!!something");
+	fn double_bang_is_bang_excluded() {
+		match route_input("!!ls -la") {
+			InputAction::BangCommand { cmd, exclude_from_context } => {
+				assert_eq!(cmd, "ls -la");
+				assert!(exclude_from_context);
 			},
-			_ => panic!("Expected UserMessage"),
+			_ => panic!("Expected BangCommand with exclude_from_context"),
+		}
+	}
+
+	#[test]
+	fn single_bang_not_excluded() {
+		match route_input("!pwd") {
+			InputAction::BangCommand { cmd, exclude_from_context } => {
+				assert_eq!(cmd, "pwd");
+				assert!(!exclude_from_context);
+			},
+			_ => panic!("Expected BangCommand"),
 		}
 	}
 
@@ -142,8 +158,9 @@ mod tests {
 	#[test]
 	fn bang_single_char() {
 		match route_input("!x") {
-			InputAction::BangCommand(cmd) => {
+			InputAction::BangCommand { cmd, exclude_from_context } => {
 				assert_eq!(cmd, "x");
+				assert!(!exclude_from_context);
 			},
 			_ => panic!("Expected BangCommand"),
 		}

@@ -549,10 +549,13 @@ pub async fn run_interactive(
 										),
 									);
 								},
-								InputAction::BangCommand(cmd) => {
+								InputAction::BangCommand { cmd, exclude_from_context } => {
 									// Show the user's command in chat.
 									app.chat.add_message(Message::User(UserMessage {
-										content: format!("!{cmd}"),
+										content: format!("{}{}",
+											if exclude_from_context { "!!" } else { "!" },
+											cmd
+										),
 									}));
 
 									// Start a streaming bang output block.
