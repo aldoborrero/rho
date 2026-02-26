@@ -32,7 +32,6 @@ pub fn write_breadcrumb(cwd: &Path, session_file: &Path) {
 /// Returns the session file path if:
 /// 1. A breadcrumb exists for the current terminal
 /// 2. The CWD in the breadcrumb matches the given CWD
-/// 3. The session file still exists on disk
 pub fn read_breadcrumb(cwd: &Path) -> Option<PathBuf> {
 	let terminal_id = get_terminal_id()?;
 	let breadcrumb_dir = crate::config::get_default_agent_dir().join("terminal-sessions");
@@ -78,13 +77,7 @@ pub fn read_breadcrumb_from(
 		return None;
 	}
 
-	// Verify session file still exists
-	let session_path = PathBuf::from(session_file);
-	if session_path.is_file() {
-		Some(session_path)
-	} else {
-		None
-	}
+	Some(PathBuf::from(session_file))
 }
 
 // ---------------------------------------------------------------------------
@@ -188,7 +181,26 @@ mod tests {
 		std::fs::remove_file(&session_file).unwrap();
 
 		let result = read_breadcrumb_from(&breadcrumb_dir, terminal_id, &cwd);
-		assert_eq!(result, None);
+		assert_eq!(result, Some(session_file));
+	}
+
+	#[test]
+	fn test_read_breadcrumb_returns_path_even_if_file_missing() {
+		let tmp = TempDir::new().unwrap();
+		let breadcrumb_dir = tmp.path().join("terminal-sessions");
+		let cwd = tmp.path().join("my-project");
+
+		let session_file = tmp.path().join("nonexistent-session.jsonl");
+		let breadcrumb_file = breadcrumb_dir.join("test-terminal");
+		std::fs::create_dir_all(&breadcrumb_dir).unwrap();
+		std::fs::write(
+			&breadcrumb_file,
+			format!("{}\n{}\n", cwd.display(), session_file.display()),
+		)
+		.unwrap();
+
+		let result = read_breadcrumb_from(&breadcrumb_dir, "test-terminal", &cwd);
+		assert_eq!(result, Some(session_file));
 	}
 
 	#[test]
