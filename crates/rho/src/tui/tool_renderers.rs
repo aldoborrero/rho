@@ -99,7 +99,7 @@ fn arg_str<'a>(args: &'a Value, field: &str) -> &'a str {
 
 /// Extract the file path from Read tool args (checks both `"path"` and
 /// `"file_path"` for compatibility).
-fn read_path<'a>(args: &'a Value) -> &'a str {
+fn read_path(args: &Value) -> &str {
 	args.get("path")
 		.or_else(|| args.get("file_path"))
 		.and_then(Value::as_str)

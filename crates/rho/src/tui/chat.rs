@@ -64,7 +64,7 @@ pub struct ChatComponent {
 	/// avoid a borrow conflict with the immutable `self.items` iteration in
 	/// `Component::render`.
 	render_cache:       RefCell<HashMap<String, CachedRender>>,
-	/// Cache: tool_use_id -> tool_name, populated in `add_message()`.
+	/// Cache: `tool_use_id` -> `tool_name`, populated in `add_message()`.
 	tool_name_cache:    HashMap<String, String>,
 	/// Animated spinner for loading states.
 	loader:             Loader,
