@@ -11,6 +11,8 @@ pub enum Message {
 	Assistant(AssistantMessage),
 	#[serde(rename = "tool_result")]
 	ToolResult(ToolResultMessage),
+	#[serde(rename = "bashExecution")]
+	BashExecution(BashExecutionMessage),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,6 +35,19 @@ pub struct ToolResultMessage {
 	pub content:     String,
 	#[serde(default)]
 	pub is_error:    bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BashExecutionMessage {
+	pub command:              String,
+	pub output:               String,
+	pub exit_code:            Option<i32>,
+	pub cancelled:            bool,
+	pub truncated:            bool,
+	#[serde(default)]
+	pub exclude_from_context: bool,
+	pub timestamp:            i64,
 }
 
 // === Content Blocks ===
@@ -89,6 +104,49 @@ mod tests {
 		match parsed {
 			Message::User(u) => assert_eq!(u.content, "Hello"),
 			_ => panic!("Expected User message"),
+		}
+	}
+
+	#[test]
+	fn test_bash_execution_message_roundtrip() {
+		let msg = Message::BashExecution(BashExecutionMessage {
+			command:              "ls -la".to_owned(),
+			output:               "total 0\ndrwxr-xr-x 2 user user 40 Jan 1 00:00 .\n".to_owned(),
+			exit_code:            Some(0),
+			cancelled:            false,
+			truncated:            false,
+			exclude_from_context: false,
+			timestamp:            1_706_000_000,
+		});
+		let json = serde_json::to_string(&msg).unwrap();
+		assert!(json.contains("\"role\":\"bashExecution\""), "tag should be bashExecution");
+		let parsed: Message = serde_json::from_str(&json).unwrap();
+		match parsed {
+			Message::BashExecution(b) => {
+				assert_eq!(b.command, "ls -la");
+				assert_eq!(b.exit_code, Some(0));
+				assert!(!b.exclude_from_context);
+			},
+			_ => panic!("Expected BashExecution message"),
+		}
+	}
+
+	#[test]
+	fn test_bash_execution_exclude_from_context() {
+		let msg = Message::BashExecution(BashExecutionMessage {
+			command:              "pwd".to_owned(),
+			output:               "/home/user".to_owned(),
+			exit_code:            Some(0),
+			cancelled:            false,
+			truncated:            false,
+			exclude_from_context: true,
+			timestamp:            1_706_000_000,
+		});
+		let json = serde_json::to_string(&msg).unwrap();
+		let parsed: Message = serde_json::from_str(&json).unwrap();
+		match parsed {
+			Message::BashExecution(b) => assert!(b.exclude_from_context),
+			_ => panic!("Expected BashExecution message"),
 		}
 	}
 

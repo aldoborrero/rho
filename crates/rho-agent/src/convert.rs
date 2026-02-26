@@ -26,6 +26,9 @@ fn to_ai_message(msg: &Message) -> rho_ai::types::Message {
 				is_error:    t.is_error,
 			})
 		},
+		Message::BashExecution(_) => {
+			panic!("BashExecution messages should not be sent to the provider")
+		},
 	}
 }
 

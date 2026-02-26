@@ -67,6 +67,9 @@ pub async fn cmd_dump(ctx: &CommandContext<'_>) -> anyhow::Result<CommandResult>
 				};
 				let _ = writeln!(transcript, "{label}: {}\n", t.content);
 			},
+			Message::BashExecution(b) => {
+				let _ = writeln!(transcript, "Bash: $ {}\n{}\n", b.command, b.output);
+			},
 		}
 	}
 

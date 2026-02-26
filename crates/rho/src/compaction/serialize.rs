@@ -34,6 +34,13 @@ pub fn serialize_conversation(messages: &[Message]) -> String {
 				output.push_str(&t.content);
 				output.push('\n');
 			},
+			Message::BashExecution(b) => {
+				output.push_str("[Bash execution]: $ ");
+				output.push_str(&b.command);
+				output.push('\n');
+				output.push_str(&b.output);
+				output.push('\n');
+			},
 		}
 	}
 	output

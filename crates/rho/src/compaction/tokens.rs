@@ -11,6 +11,7 @@ pub fn estimate_tokens(message: &Message) -> u32 {
 		Message::User(u) => u.content.len(),
 		Message::Assistant(a) => estimate_assistant_chars(a),
 		Message::ToolResult(t) => t.content.len(),
+		Message::BashExecution(b) => b.command.len() + b.output.len(),
 	};
 	chars_to_tokens(chars)
 }

@@ -558,6 +558,10 @@ impl Component for ChatComponent {
 					lines.extend(self.render_tool_result(&t, width));
 					i += 1;
 				},
+				ChatItem::Message(Message::BashExecution(_)) => {
+					// BashExecution rendering handled in a later task.
+					i += 1;
+				},
 				ChatItem::Bang(bang) => {
 					// BangOutput doesn't need &mut self, just render directly.
 					// But we need to avoid the borrow conflict, so clone.
