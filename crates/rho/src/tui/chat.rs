@@ -1,7 +1,7 @@
 //! Chat message rendering component -- displays conversation history as styled
 //! ANSI text.
 
-use std::{collections::HashMap, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 use rho_tui::{
 	component::{Component, InputResult},
@@ -60,7 +60,10 @@ pub struct ChatComponent {
 	/// Whether tool output blocks are expanded (Ctrl+O toggle).
 	tools_expanded:     bool,
 	/// Side-table cache for rendered tool results, keyed by `tool_use_id`.
-	render_cache:       HashMap<String, CachedRender>,
+	/// Wrapped in `RefCell` so `render_tool_result` can take `&self` and
+	/// avoid a borrow conflict with the immutable `self.items` iteration in
+	/// `Component::render`.
+	render_cache:       RefCell<HashMap<String, CachedRender>>,
 	/// Cache: tool_use_id -> tool_name, populated in `add_message()`.
 	tool_name_cache:    HashMap<String, String>,
 	/// Animated spinner for loading states.
@@ -94,7 +97,7 @@ impl ChatComponent {
 			theme,
 			symbols,
 			tools_expanded: false,
-			render_cache: HashMap::new(),
+			render_cache: RefCell::new(HashMap::new()),
 			tool_name_cache: HashMap::new(),
 			loader,
 			tool_executing: None,
@@ -237,7 +240,7 @@ impl ChatComponent {
 		self.streaming_thinking.clear();
 		self.is_streaming = false;
 		self.scroll_offset = 0;
-		self.render_cache.clear();
+		self.render_cache.borrow_mut().clear();
 		self.tool_name_cache.clear();
 		self.loader.stop();
 		self.tool_executing = None;
@@ -247,7 +250,7 @@ impl ChatComponent {
 	/// Toggle expanded/collapsed state for all tool output blocks (Ctrl+O).
 	pub fn toggle_tool_expansion(&mut self) {
 		self.tools_expanded = !self.tools_expanded;
-		self.render_cache.clear();
+		self.render_cache.borrow_mut().clear();
 	}
 
 	/// Advance spinner animation. Returns true if re-render needed.
@@ -394,14 +397,17 @@ impl ChatComponent {
 		lines
 	}
 
-	fn render_tool_result(&mut self, msg: &ToolResultMessage, width: u16) -> Vec<String> {
+	fn render_tool_result(&self, msg: &ToolResultMessage, width: u16) -> Vec<String> {
 		// Check cache first
-		if let Some(cached) = self.render_cache.get(&msg.tool_use_id)
-			&& cached.expanded == self.tools_expanded
-			&& cached.width == width
 		{
-			return cached.lines.clone();
-		}
+			let cache = self.render_cache.borrow();
+			if let Some(cached) = cache.get(&msg.tool_use_id)
+				&& cached.expanded == self.tools_expanded
+				&& cached.width == width
+			{
+				return cached.lines.clone();
+			}
+		} // borrow dropped here
 
 		// Cache miss — render fresh.
 		// Look up both name and args so we can render a combined block.
@@ -415,13 +421,10 @@ impl ChatComponent {
 			renderer.render_combined(&args, &display, self.tools_expanded, &self.theme, width);
 
 		// Store in cache
-		self
-			.render_cache
-			.insert(msg.tool_use_id.clone(), CachedRender {
-				expanded: self.tools_expanded,
-				width,
-				lines: lines.clone(),
-			});
+		self.render_cache.borrow_mut().insert(
+			msg.tool_use_id.clone(),
+			CachedRender { expanded: self.tools_expanded, width, lines: lines.clone() },
+		);
 
 		lines
 	}
@@ -537,21 +540,18 @@ impl Component for ChatComponent {
 	fn render(&mut self, width: u16) -> Vec<String> {
 		let mut lines = Vec::new();
 
-		// Clone items to avoid borrow conflict with &mut self in render_tool_result.
-		// We need to iterate over items but render_tool_result needs &mut self for
-		// cache.
+		// Iterate over items without cloning — `render_tool_result` now takes
+		// `&self` thanks to the `RefCell`-wrapped render cache.
 		let item_count = self.items.len();
 		let mut i = 0;
 		while i < item_count {
 			match &self.items[i] {
 				ChatItem::Message(Message::User(u)) => {
-					let u = u.clone();
-					lines.extend(self.render_user_message(&u, width));
+					lines.extend(self.render_user_message(u, width));
 					i += 1;
 				},
 				ChatItem::Message(Message::Assistant(a)) => {
-					let a = a.clone();
-					lines.extend(self.render_assistant_message(&a, width));
+					lines.extend(self.render_assistant_message(a, width));
 					i += 1;
 				},
 				ChatItem::Message(Message::ToolResult(_)) => {
@@ -566,12 +566,9 @@ impl Component for ChatComponent {
 						}
 					}
 					// Single tool result (or non-Read) — render normally.
-					let t = if let ChatItem::Message(Message::ToolResult(t)) = &self.items[i] {
-						t.clone()
-					} else {
-						unreachable!()
-					};
-					lines.extend(self.render_tool_result(&t, width));
+					if let ChatItem::Message(Message::ToolResult(t)) = &self.items[i] {
+						lines.extend(self.render_tool_result(t, width));
+					}
 					i += 1;
 				},
 				ChatItem::Message(Message::BashExecution(_)) => {
@@ -581,17 +578,7 @@ impl Component for ChatComponent {
 					i += 1;
 				},
 				ChatItem::Bang(bang) => {
-					// BangOutput doesn't need &mut self, just render directly.
-					// But we need to avoid the borrow conflict, so clone.
-					let bang_lines = self.render_bang_output(
-						&BangOutput {
-							command:  bang.command.clone(),
-							output:   bang.output.clone(),
-							is_error: bang.is_error,
-						},
-						width,
-					);
-					lines.extend(bang_lines);
+					lines.extend(self.render_bang_output(bang, width));
 					i += 1;
 				},
 			}
@@ -883,10 +870,10 @@ mod tests {
 		}));
 		// First render populates cache
 		let _ = chat.render(80);
-		assert!(!chat.render_cache.is_empty());
+		assert!(!chat.render_cache.borrow().is_empty());
 		// Toggle clears cache
 		chat.toggle_tool_expansion();
-		assert!(chat.render_cache.is_empty());
+		assert!(chat.render_cache.borrow().is_empty());
 	}
 
 	#[test]
