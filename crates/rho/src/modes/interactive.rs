@@ -100,13 +100,14 @@ fn cancel_bang(
 	*mode = AppMode::Idle;
 }
 
-/// Parse a thinking level string into a `ThinkingLevel`.
-fn parse_thinking(s: &str) -> ThinkingLevel {
-	match s {
-		"low" => ThinkingLevel::Low,
-		"medium" => ThinkingLevel::Medium,
-		"high" => ThinkingLevel::High,
-		_ => ThinkingLevel::Off,
+/// Convert a settings-level [`ThinkingLevel`](crate::settings::ThinkingLevel) to
+/// the agent-loop equivalent.
+const fn to_agent_thinking(level: crate::settings::ThinkingLevel) -> ThinkingLevel {
+	match level {
+		crate::settings::ThinkingLevel::Off => ThinkingLevel::Off,
+		crate::settings::ThinkingLevel::Low => ThinkingLevel::Low,
+		crate::settings::ThinkingLevel::Medium => ThinkingLevel::Medium,
+		crate::settings::ThinkingLevel::High => ThinkingLevel::High,
 	}
 }
 
@@ -154,7 +155,7 @@ fn spawn_agent(
 	let agent_config = AgentConfig {
 		system_prompt: system_prompt.to_owned(),
 		max_tokens:    settings.agent.max_tokens,
-		thinking:      parse_thinking(&settings.agent.thinking),
+		thinking:      to_agent_thinking(settings.agent.thinking),
 		retry:         rho_ai::RetryConfig {
 			enabled:       true,
 			max_retries:   settings.retry.max_retries,

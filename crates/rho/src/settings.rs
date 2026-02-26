@@ -72,20 +72,30 @@ impl Default for ModelSettings {
 	}
 }
 
+/// Thinking budget level for the LLM.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThinkingLevel {
+	#[default]
+	Off,
+	Low,
+	Medium,
+	High,
+}
+
 /// Agent loop parameters.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AgentSettings {
 	pub max_tokens:  u32,
-	/// "off", "low", "medium", "high"
-	pub thinking:    String,
+	pub thinking:    ThinkingLevel,
 	/// -1.0 = provider default, 0.0..2.0 = custom
 	pub temperature: f32,
 }
 
 impl Default for AgentSettings {
 	fn default() -> Self {
-		Self { max_tokens: 8192, thinking: "off".to_owned(), temperature: -1.0 }
+		Self { max_tokens: 8192, thinking: ThinkingLevel::default(), temperature: -1.0 }
 	}
 }
 
@@ -166,7 +176,12 @@ pub fn load(cli: &Cli) -> Result<Settings> {
 		settings.model.default.clone_from(model);
 	}
 	if let Some(ref thinking) = cli.thinking {
-		settings.agent.thinking.clone_from(thinking);
+		settings.agent.thinking = match thinking.as_str() {
+			"low" => ThinkingLevel::Low,
+			"medium" => ThinkingLevel::Medium,
+			"high" => ThinkingLevel::High,
+			_ => ThinkingLevel::Off,
+		};
 	}
 
 	Ok(settings)
@@ -411,7 +426,7 @@ mod tests {
 	fn default_settings_round_trip() {
 		let s = Settings::default();
 		assert_eq!(s.agent.max_tokens, 8192);
-		assert_eq!(s.agent.thinking, "off");
+		assert_eq!(s.agent.thinking, ThinkingLevel::Off);
 		assert!(s.compaction.enabled);
 		assert_eq!(s.retry.max_retries, 3);
 		assert_eq!(s.model.default, "claude-sonnet-4-5-20250929");
@@ -522,7 +537,7 @@ mod tests {
 		let settings: Settings = toml::from_str(toml_str).unwrap();
 		assert_eq!(settings.agent.max_tokens, 16384);
 		// Other fields should be defaults
-		assert_eq!(settings.agent.thinking, "off");
+		assert_eq!(settings.agent.thinking, ThinkingLevel::Off);
 		assert_eq!(settings.model.default, "claude-sonnet-4-5-20250929");
 	}
 
@@ -531,5 +546,17 @@ mod tests {
 		let items = list_all();
 		// Should at least have model.default, agent.max_tokens, etc.
 		assert!(!items.is_empty());
+	}
+
+	#[test]
+	fn thinking_level_serde_roundtrip() {
+		let val: ThinkingLevel = serde_json::from_str("\"high\"").unwrap();
+		assert_eq!(val, ThinkingLevel::High);
+
+		let val: ThinkingLevel = serde_json::from_str("\"off\"").unwrap();
+		assert_eq!(val, ThinkingLevel::Off);
+
+		let s = serde_json::to_string(&ThinkingLevel::Medium).unwrap();
+		assert_eq!(s, "\"medium\"");
 	}
 }
