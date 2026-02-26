@@ -16,6 +16,42 @@ const MAX_OUTPUT_BYTES: usize = 100 * 1024;
 /// Default timeout in seconds.
 const DEFAULT_TIMEOUT_SECS: u64 = 300;
 
+/// A buffer that keeps only the last `max_bytes` of appended content.
+///
+/// Tracks total bytes seen for truncation reporting.
+struct TailBuffer {
+	buf:         String,
+	max_bytes:   usize,
+	total_bytes: usize,
+	truncated:   bool,
+}
+
+impl TailBuffer {
+	const fn new(max_bytes: usize) -> Self {
+		Self {
+			buf: String::new(),
+			max_bytes,
+			total_bytes: 0,
+			truncated: false,
+		}
+	}
+
+	fn append(&mut self, chunk: &str) {
+		self.total_bytes += chunk.len();
+		self.buf.push_str(chunk);
+		if self.buf.len() > self.max_bytes {
+			self.truncated = true;
+			let excess = self.buf.len() - self.max_bytes;
+			// Drain from the front to keep the tail.
+			self.buf.drain(..excess);
+		}
+	}
+
+	fn text(&self) -> &str {
+		&self.buf
+	}
+}
+
 /// Tool that executes shell commands via the rho-tools brush-core shell.
 pub struct BashTool;
 
@@ -62,14 +98,14 @@ impl Tool for BashTool {
 			.and_then(Value::as_u64)
 			.unwrap_or(DEFAULT_TIMEOUT_SECS);
 
-		// Collect streaming output into a shared buffer.
-		let output = Arc::new(Mutex::new(String::new()));
+		// Collect streaming output into a bounded tail buffer.
+		let output = Arc::new(Mutex::new(TailBuffer::new(MAX_OUTPUT_BYTES)));
 		let output_clone = output.clone();
 		let on_chunk: Box<dyn Fn(String) + Send + Sync> = Box::new(move |chunk: String| {
 			output_clone
 				.lock()
 				.unwrap_or_else(|e| e.into_inner())
-				.push_str(&chunk);
+				.append(&chunk);
 		});
 
 		let options = ShellExecuteOptions {
@@ -110,11 +146,18 @@ impl Tool for BashTool {
 					});
 				}
 
-				let mut text = output.lock().unwrap_or_else(|e| e.into_inner()).clone();
-				if text.len() > MAX_OUTPUT_BYTES {
-					text.truncate(MAX_OUTPUT_BYTES);
-					text.push_str("\n... (output truncated)");
-				}
+				let buf = output.lock().unwrap_or_else(|e| e.into_inner());
+				let text = if buf.truncated {
+					format!(
+						"[Output truncated: showing last {}KB of {}KB total]\n{}",
+						MAX_OUTPUT_BYTES / 1024,
+						buf.total_bytes / 1024,
+						buf.text()
+					)
+				} else {
+					buf.text().to_owned()
+				};
+				drop(buf);
 
 				let is_error = result.exit_code.is_none_or(|c| c != 0);
 				Ok(ToolOutput { content: text, is_error })
@@ -172,6 +215,61 @@ mod tests {
 			.await
 			.unwrap();
 		assert_eq!(result.content.trim(), "/tmp");
+		assert!(!result.is_error);
+	}
+
+	#[test]
+	fn test_tail_buffer_small_input() {
+		let mut buf = TailBuffer::new(100);
+		buf.append("hello ");
+		buf.append("world");
+		assert_eq!(buf.text(), "hello world");
+		assert_eq!(buf.total_bytes, 11);
+		assert!(!buf.truncated);
+	}
+
+	#[test]
+	fn test_tail_buffer_truncates_to_tail() {
+		let mut buf = TailBuffer::new(10);
+		buf.append("aaaaaaaaaa"); // 10 bytes, exactly at limit
+		assert_eq!(buf.text(), "aaaaaaaaaa");
+		assert!(!buf.truncated);
+
+		buf.append("bbbbb"); // 5 more bytes, now 15 total, buffer keeps last 10
+		assert_eq!(buf.total_bytes, 15);
+		assert!(buf.truncated);
+		assert_eq!(buf.text().len(), 10);
+		assert_eq!(buf.text(), "aaaaabbbbb"); // tail of the content
+	}
+
+	#[test]
+	fn test_tail_buffer_large_single_chunk() {
+		let mut buf = TailBuffer::new(10);
+		buf.append("abcdefghijklmnop"); // 16 bytes in one chunk
+		assert_eq!(buf.total_bytes, 16);
+		assert!(buf.truncated);
+		assert_eq!(buf.text(), "ghijklmnop"); // last 10 bytes
+	}
+
+	#[tokio::test]
+	async fn test_bash_large_output_truncated() {
+		let tool = BashTool;
+		let ct = CancellationToken::new();
+		// Generate output larger than MAX_OUTPUT_BYTES (100KB).
+		let result = tool
+			.execute(
+				json!({"command": "head -c 204800 /dev/urandom | base64"}),
+				Path::new("."),
+				&ct,
+			)
+			.await
+			.unwrap();
+		// Output should contain the truncation notice.
+		assert!(
+			result.content.starts_with("[Output truncated:"),
+			"Expected truncation notice, got: {}",
+			&result.content[..80.min(result.content.len())]
+		);
 		assert!(!result.is_error);
 	}
 }
