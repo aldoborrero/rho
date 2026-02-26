@@ -407,7 +407,15 @@ pub async fn run_interactive(
 
 	// Render existing session messages (if resuming).
 	for msg in session.messages() {
-		app.chat.add_message(msg.clone());
+		match msg {
+			Message::BashExecution(bash) => {
+				let is_error = bash.exit_code.is_none_or(|c| c != 0);
+				app.chat.add_bang_output(&bash.command, &bash.output, is_error);
+			},
+			_ => {
+				app.chat.add_message(msg.clone());
+			},
+		}
 	}
 
 	// Track application mode.
