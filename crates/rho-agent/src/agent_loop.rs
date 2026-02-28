@@ -36,8 +36,9 @@ pub struct AgentConfig {
 	pub api_key:       Option<String>,
 	/// Temperature override. `None` or negative = provider default.
 	pub temperature:   Option<f32>,
-	/// Cancellation token — when cancelled, the loop exits with
-	/// `AgentOutcome::Cancelled` at the next checkpoint.
+	/// Cancellation token — when cancelled, the loop exits immediately
+	/// with `AgentOutcome::Cancelled`. Cancellation is raced against LLM
+	/// streaming, tool execution, and retry delays via `tokio::select!`.
 	pub abort:         Option<CancellationToken>,
 }
 
@@ -82,9 +83,12 @@ pub async fn run_agent_loop(
 		..Default::default()
 	};
 
+	// A token that never fires — used when config.abort is None.
+	let cancel = config.abort.clone().unwrap_or_default();
+
 	loop {
-		// Checkpoint 1: before starting a new turn.
-		if let Some(outcome) = check_should_stop(config.abort.as_ref(), &event_tx).await {
+		// Checkpoint: before starting a new turn.
+		if let Some(outcome) = check_should_stop(&cancel, &event_tx).await {
 			return outcome;
 		}
 
@@ -114,7 +118,16 @@ pub async fn run_agent_loop(
 		let mut done_agent_msg: Option<crate::types::AssistantMessage> = None;
 		let mut done_ai_msg: Option<rho_ai::types::AssistantMessage> = None;
 
-		while let Some(event) = event_stream.next().await {
+		loop {
+			let event = tokio::select! {
+				event = event_stream.next() => match event {
+					Some(e) => e,
+					None => break,
+				},
+				() = cancel.cancelled() => {
+					return emit_done(AgentOutcome::Cancelled, &event_tx).await;
+				}
+			};
 			match event {
 				rho_ai::StreamEvent::TextDelta { text, .. } => {
 					let _ = event_tx.send(AgentEvent::TextDelta(text)).await;
@@ -139,7 +152,13 @@ pub async fn run_agent_loop(
 								error:    error_msg,
 							})
 							.await;
-						tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+						// Race retry delay against cancellation.
+						tokio::select! {
+							() = tokio::time::sleep(std::time::Duration::from_millis(delay)) => {},
+							() = cancel.cancelled() => {
+								return emit_done(AgentOutcome::Cancelled, &event_tx).await;
+							}
+						}
 						stream_error = true;
 						break;
 					}
@@ -210,8 +229,8 @@ pub async fn run_agent_loop(
 				})
 				.collect();
 
-			// Checkpoint 2: before executing any tools.
-			if let Some(outcome) = check_should_stop(config.abort.as_ref(), &event_tx).await {
+			// Checkpoint: before executing any tools.
+			if let Some(outcome) = check_should_stop(&cancel, &event_tx).await {
 				return outcome;
 			}
 
@@ -227,10 +246,11 @@ pub async fn run_agent_loop(
 
 			// Execute with barrier scheduling: shared tools run in
 			// parallel, exclusive tools flush all pending work first,
-			// then run alone.
-			let cancel = config.abort.clone().unwrap_or_default();
+			// then run alone. Each execution is raced against the
+			// cancellation token for immediate abort.
 			let mut results: Vec<Option<(Arc<String>, bool)>> = vec![None; tool_uses.len()];
 			let mut pending_shared: Vec<(usize, &str, &str, &serde_json::Value)> = Vec::new();
+			let mut cancelled = false;
 
 			for (batch_idx, &(_, id, name, input)) in tool_uses.iter().enumerate() {
 				if tools.concurrency(name) == Concurrency::Shared {
@@ -239,22 +259,40 @@ pub async fn run_agent_loop(
 					// Barrier: flush all pending shared tools first.
 					if !pending_shared.is_empty() {
 						let batch = std::mem::take(&mut pending_shared);
-						flush_shared_batch(&batch, tools, &config.cwd, &cancel, &event_tx, &mut results)
-							.await;
+						if flush_shared_batch(&batch, tools, &config.cwd, &cancel, &event_tx, &mut results)
+							.await
+						{
+							cancelled = true;
+							break;
+						}
 					}
-					// Execute exclusive tool alone.
+					// Execute exclusive tool alone, raced against cancellation.
 					let cb = make_update_callback(&event_tx, id);
-					let result =
-						tools.execute(name, input.clone(), &config.cwd, &cancel, Some(&cb)).await;
-					results[batch_idx] = Some(wrap_tool_result(result));
+					let result = tokio::select! {
+						result = tools.execute(name, input.clone(), &config.cwd, &cancel, Some(&cb)) => {
+							wrap_tool_result(result)
+						}
+						() = cancel.cancelled() => {
+							cancelled = true;
+							break;
+						}
+					};
+					results[batch_idx] = Some(result);
 				}
 			}
 
-			// Flush remaining shared tools.
-			if !pending_shared.is_empty() {
+			// Flush remaining shared tools (unless already cancelled).
+			if !cancelled && !pending_shared.is_empty() {
 				let batch = std::mem::take(&mut pending_shared);
-				flush_shared_batch(&batch, tools, &config.cwd, &cancel, &event_tx, &mut results)
-					.await;
+				if flush_shared_batch(&batch, tools, &config.cwd, &cancel, &event_tx, &mut results)
+					.await
+				{
+					cancelled = true;
+				}
+			}
+
+			if cancelled {
+				return emit_done(AgentOutcome::Cancelled, &event_tx).await;
 			}
 
 			// Emit results and append to histories in original order.
@@ -287,8 +325,8 @@ pub async fn run_agent_loop(
 				messages.push(tool_msg);
 			}
 
-			// Checkpoint 3: before sending tool results back to LLM.
-			if let Some(outcome) = check_should_stop(config.abort.as_ref(), &event_tx).await {
+			// Checkpoint: before sending tool results back to LLM.
+			if let Some(outcome) = check_should_stop(&cancel, &event_tx).await {
 				return outcome;
 			}
 			continue;
@@ -309,7 +347,8 @@ pub async fn run_agent_loop(
 }
 
 /// Flush a batch of pending shared tools: create per-tool update callbacks,
-/// run all in parallel via `join_all`, and store the results.
+/// run all in parallel via `join_all`, and store the results. Returns `true`
+/// if cancellation fired before completion.
 #[allow(clippy::future_not_send, reason = "ToolRegistry contains non-Send tools")]
 async fn flush_shared_batch(
 	batch: &[(usize, &str, &str, &serde_json::Value)],
@@ -318,7 +357,7 @@ async fn flush_shared_batch(
 	cancel: &CancellationToken,
 	event_tx: &mpsc::Sender<AgentEvent>,
 	results: &mut [Option<(Arc<String>, bool)>],
-) {
+) -> bool {
 	let callbacks: Vec<OnToolUpdate> = batch
 		.iter()
 		.map(|&(_, tid, _, _)| make_update_callback(event_tx, tid))
@@ -326,9 +365,14 @@ async fn flush_shared_batch(
 	let futures = batch.iter().zip(callbacks.iter()).map(|(&(_, _, n, inp), cb)| {
 		tools.execute(n, inp.clone(), cwd, cancel, Some(cb))
 	});
-	let batch_results = join_all(futures).await;
-	for (&(bi, ..), result) in batch.iter().zip(batch_results) {
-		results[bi] = Some(wrap_tool_result(result));
+	tokio::select! {
+		batch_results = join_all(futures) => {
+			for (&(bi, ..), result) in batch.iter().zip(batch_results) {
+				results[bi] = Some(wrap_tool_result(result));
+			}
+			false
+		}
+		() = cancel.cancelled() => true,
 	}
 }
 
@@ -355,10 +399,10 @@ fn make_update_callback(
 /// Check if the loop should stop — either the abort token is cancelled or the
 /// event channel has been closed (consumer dropped).
 async fn check_should_stop(
-	abort: Option<&CancellationToken>,
+	abort: &CancellationToken,
 	event_tx: &mpsc::Sender<AgentEvent>,
 ) -> Option<AgentOutcome> {
-	if abort.is_some_and(CancellationToken::is_cancelled) {
+	if abort.is_cancelled() {
 		let outcome = AgentOutcome::Cancelled;
 		let _ = event_tx.send(AgentEvent::Done(outcome.clone())).await;
 		return Some(outcome);
