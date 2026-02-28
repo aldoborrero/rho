@@ -3,7 +3,7 @@ use std::{collections::HashMap, path::Path, sync::Arc};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-	tools::{Concurrency, Tool, ToolOutput},
+	tools::{Concurrency, OnToolUpdate, Tool, ToolOutput},
 	types::ToolDefinition,
 };
 
@@ -83,12 +83,13 @@ impl ToolRegistry {
 		input: serde_json::Value,
 		cwd: &Path,
 		cancel: &CancellationToken,
+		on_update: Option<&OnToolUpdate>,
 	) -> anyhow::Result<ToolOutput> {
 		let tool = self
 			.tools
 			.get(name)
 			.ok_or_else(|| anyhow::anyhow!("Unknown tool: {name}"))?;
-		tool.execute(input, cwd, cancel).await
+		tool.execute(input, cwd, cancel, on_update).await
 	}
 }
 

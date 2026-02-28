@@ -725,6 +725,11 @@ pub async fn run_interactive(
 							app.chat.set_tool_executing(Some(name));
 						}
 					},
+					AgentEvent::ToolExecutionUpdate { content, .. } => {
+						if matches!(mode, AppMode::Streaming) {
+							app.chat.append_tool_output(&content);
+						}
+					},
 					AgentEvent::ToolCallResult { .. } => {
 						app.status.set_working_phase("Thinking");
 						app.chat.set_tool_executing(None);

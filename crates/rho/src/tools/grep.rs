@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
-use super::{Tool, ToolOutput};
+use super::{OnToolUpdate, Tool, ToolOutput};
 
 /// Default maximum number of output lines.
 const DEFAULT_LIMIT: usize = 100;
@@ -63,7 +63,7 @@ impl Tool for GrepTool {
 		})
 	}
 
-	async fn execute(&self, input: Value, cwd: &Path, cancel: &CancellationToken) -> anyhow::Result<ToolOutput> {
+	async fn execute(&self, input: Value, cwd: &Path, cancel: &CancellationToken, _on_update: Option<&OnToolUpdate>) -> anyhow::Result<ToolOutput> {
 		let pattern = input
 			.get("pattern")
 			.and_then(Value::as_str)
@@ -186,7 +186,7 @@ mod tests {
 		let tool = GrepTool;
 		let ct = CancellationToken::new();
 		let result = tool
-			.execute(json!({"pattern": "hello", "path": dir.path().to_str().unwrap()}), Path::new("/"), &ct)
+			.execute(json!({"pattern": "hello", "path": dir.path().to_str().unwrap()}), Path::new("/"), &ct, None)
 			.await
 			.unwrap();
 		assert!(!result.is_error, "Unexpected error: {}", result.content);
@@ -215,6 +215,7 @@ mod tests {
 				json!({"pattern": "zzzznotfound", "path": dir.path().to_str().unwrap()}),
 				Path::new("/"),
 				&ct,
+				None,
 			)
 			.await
 			.unwrap();
@@ -234,6 +235,7 @@ mod tests {
 				json!({"pattern": "hello", "path": dir.path().to_str().unwrap(), "i": true}),
 				Path::new("/"),
 				&ct,
+				None,
 			)
 			.await
 			.unwrap();
@@ -258,6 +260,7 @@ mod tests {
 				json!({"pattern": "fn main", "path": dir.path().to_str().unwrap(), "glob": "*.rs"}),
 				Path::new("/"),
 				&ct,
+				None,
 			)
 			.await
 			.unwrap();

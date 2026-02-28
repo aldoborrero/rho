@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
-use super::{Tool, ToolOutput};
+use super::{OnToolUpdate, Tool, ToolOutput};
 
 /// Default maximum number of results.
 const DEFAULT_LIMIT: usize = 1000;
@@ -47,7 +47,7 @@ impl Tool for FindTool {
 		})
 	}
 
-	async fn execute(&self, input: Value, cwd: &Path, cancel: &CancellationToken) -> anyhow::Result<ToolOutput> {
+	async fn execute(&self, input: Value, cwd: &Path, cancel: &CancellationToken, _on_update: Option<&OnToolUpdate>) -> anyhow::Result<ToolOutput> {
 		let pattern = input
 			.get("pattern")
 			.and_then(Value::as_str)
@@ -149,7 +149,7 @@ mod tests {
 		let tool = FindTool;
 		let ct = CancellationToken::new();
 		let result = tool
-			.execute(json!({"pattern": "*.rs", "path": dir.path().to_str().unwrap()}), Path::new("/"), &ct)
+			.execute(json!({"pattern": "*.rs", "path": dir.path().to_str().unwrap()}), Path::new("/"), &ct, None)
 			.await
 			.unwrap();
 		assert!(!result.is_error, "Unexpected error: {}", result.content);
@@ -174,6 +174,7 @@ mod tests {
 				json!({"pattern": "*.nonexistent", "path": dir.path().to_str().unwrap()}),
 				Path::new("/"),
 				&ct,
+				None,
 			)
 			.await
 			.unwrap();

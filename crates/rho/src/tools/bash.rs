@@ -8,7 +8,7 @@ use rho_tools::shell::{ShellExecuteOptions, execute_shell};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
-use super::{Concurrency, Tool, ToolOutput};
+use super::{Concurrency, OnToolUpdate, Tool, ToolOutput};
 
 /// Maximum output size in bytes (100 KB).
 const MAX_OUTPUT_BYTES: usize = 100 * 1024;
@@ -88,6 +88,7 @@ impl Tool for BashTool {
 		input: Value,
 		cwd: &Path,
 		cancel: &CancellationToken,
+		on_update: Option<&OnToolUpdate>,
 	) -> anyhow::Result<ToolOutput> {
 		let command = input
 			.get("command")
@@ -102,11 +103,15 @@ impl Tool for BashTool {
 		// Collect streaming output into a bounded tail buffer.
 		let output = Arc::new(Mutex::new(TailBuffer::new(MAX_OUTPUT_BYTES)));
 		let output_clone = output.clone();
+		let on_update_clone = on_update.cloned();
 		let on_chunk: Box<dyn Fn(String) + Send + Sync> = Box::new(move |chunk: String| {
 			output_clone
 				.lock()
 				.unwrap_or_else(|e| e.into_inner())
 				.append(&chunk);
+			if let Some(ref cb) = on_update_clone {
+				cb(&chunk);
+			}
 		});
 
 		let options = ShellExecuteOptions {
@@ -181,7 +186,7 @@ mod tests {
 		let tool = BashTool;
 		let ct = CancellationToken::new();
 		let result = tool
-			.execute(json!({"command": "echo hello"}), Path::new("."), &ct)
+			.execute(json!({"command": "echo hello"}), Path::new("."), &ct, None)
 			.await
 			.unwrap();
 		assert_eq!(result.content.trim(), "hello");
@@ -193,7 +198,7 @@ mod tests {
 		let tool = BashTool;
 		let ct = CancellationToken::new();
 		let result = tool
-			.execute(json!({"command": "false"}), Path::new("."), &ct)
+			.execute(json!({"command": "false"}), Path::new("."), &ct, None)
 			.await
 			.unwrap();
 		assert!(result.is_error);
@@ -203,7 +208,7 @@ mod tests {
 	async fn test_bash_missing_command() {
 		let tool = BashTool;
 		let ct = CancellationToken::new();
-		let result = tool.execute(json!({}), Path::new("."), &ct).await;
+		let result = tool.execute(json!({}), Path::new("."), &ct, None).await;
 		assert!(result.is_err());
 	}
 
@@ -212,7 +217,7 @@ mod tests {
 		let tool = BashTool;
 		let ct = CancellationToken::new();
 		let result = tool
-			.execute(json!({"command": "pwd"}), Path::new("/tmp"), &ct)
+			.execute(json!({"command": "pwd"}), Path::new("/tmp"), &ct, None)
 			.await
 			.unwrap();
 		assert_eq!(result.content.trim(), "/tmp");
@@ -283,7 +288,7 @@ mod tests {
 		let ct = CancellationToken::new();
 		// Generate output larger than MAX_OUTPUT_BYTES (100KB).
 		let result = tool
-			.execute(json!({"command": "head -c 204800 /dev/urandom | base64"}), Path::new("."), &ct)
+			.execute(json!({"command": "head -c 204800 /dev/urandom | base64"}), Path::new("."), &ct, None)
 			.await
 			.unwrap();
 		// Output should contain the truncation notice.

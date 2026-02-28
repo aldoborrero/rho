@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
-use super::{Tool, ToolOutput};
+use super::{OnToolUpdate, Tool, ToolOutput};
 
 /// Tool that converts HTML content to Markdown.
 pub struct HtmlToMarkdownTool;
@@ -36,7 +36,7 @@ impl Tool for HtmlToMarkdownTool {
 		})
 	}
 
-	async fn execute(&self, input: Value, _cwd: &Path, _cancel: &CancellationToken) -> anyhow::Result<ToolOutput> {
+	async fn execute(&self, input: Value, _cwd: &Path, _cancel: &CancellationToken, _on_update: Option<&OnToolUpdate>) -> anyhow::Result<ToolOutput> {
 		let html = input
 			.get("html")
 			.and_then(Value::as_str)
@@ -77,7 +77,7 @@ mod tests {
 		let tool = HtmlToMarkdownTool;
 		let ct = CancellationToken::new();
 		let result = tool
-			.execute(json!({"html": "<h1>Hello</h1><p>World</p>"}), Path::new("/"), &ct)
+			.execute(json!({"html": "<h1>Hello</h1><p>World</p>"}), Path::new("/"), &ct, None)
 			.await
 			.unwrap();
 		assert!(!result.is_error, "Unexpected error: {}", result.content);
@@ -89,7 +89,7 @@ mod tests {
 	async fn test_html_to_markdown_missing_html() {
 		let tool = HtmlToMarkdownTool;
 		let ct = CancellationToken::new();
-		let result = tool.execute(json!({}), Path::new("/"), &ct).await;
+		let result = tool.execute(json!({}), Path::new("/"), &ct, None).await;
 		assert!(result.is_err(), "Expected error for missing html parameter");
 	}
 }

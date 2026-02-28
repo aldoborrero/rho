@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use tokio::fs;
 use tokio_util::sync::CancellationToken;
 
-use super::{Concurrency, Tool, ToolOutput};
+use super::{Concurrency, OnToolUpdate, Tool, ToolOutput};
 
 /// Tool that writes content to a file.
 pub struct WriteTool;
@@ -41,7 +41,7 @@ impl Tool for WriteTool {
 		Concurrency::Exclusive
 	}
 
-	async fn execute(&self, input: Value, cwd: &Path, _cancel: &CancellationToken) -> anyhow::Result<ToolOutput> {
+	async fn execute(&self, input: Value, cwd: &Path, _cancel: &CancellationToken, _on_update: Option<&OnToolUpdate>) -> anyhow::Result<ToolOutput> {
 		let raw_path = input
 			.get("path")
 			.and_then(Value::as_str)
@@ -87,6 +87,7 @@ mod tests {
 				json!({"path": file_path.to_str().unwrap(), "content": "hello world"}),
 				Path::new("/"),
 				&ct,
+				None,
 			)
 			.await
 			.unwrap();
@@ -104,7 +105,7 @@ mod tests {
 		let tool = WriteTool;
 		let ct = CancellationToken::new();
 		let result = tool
-			.execute(json!({"path": file_path.to_str().unwrap(), "content": "nested"}), Path::new("/"), &ct)
+			.execute(json!({"path": file_path.to_str().unwrap(), "content": "nested"}), Path::new("/"), &ct, None)
 			.await
 			.unwrap();
 		assert!(!result.is_error);
@@ -126,6 +127,7 @@ mod tests {
 				json!({"path": file_path.to_str().unwrap(), "content": "new content"}),
 				Path::new("/"),
 				&ct,
+				None,
 			)
 			.await
 			.unwrap();

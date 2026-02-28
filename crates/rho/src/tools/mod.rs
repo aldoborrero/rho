@@ -13,7 +13,7 @@ pub mod write;
 
 // Re-export Tool trait and ToolOutput from rho-agent.
 use registry::{ToolRegistry, ToolRegistryBuilder};
-pub use rho_agent::tools::{Concurrency, Tool, ToolOutput};
+pub use rho_agent::tools::{Concurrency, OnToolUpdate, Tool, ToolOutput};
 
 /// Creates a [`ToolRegistry`] pre-populated with all built-in tools.
 #[must_use]

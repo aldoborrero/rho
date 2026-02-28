@@ -72,6 +72,8 @@ pub struct ChatComponent {
 	tool_executing:     Option<String>,
 	/// Currently streaming bang output (in-progress command).
 	streaming_bang:     Option<BangOutput>,
+	/// Accumulated streaming output from a running tool (for spinner updates).
+	streaming_tool_output: String,
 }
 
 impl ChatComponent {
@@ -102,6 +104,7 @@ impl ChatComponent {
 			loader,
 			tool_executing: None,
 			streaming_bang: None,
+			streaming_tool_output: String::new(),
 		}
 	}
 
@@ -245,6 +248,7 @@ impl ChatComponent {
 		self.loader.stop();
 		self.tool_executing = None;
 		self.streaming_bang = None;
+		self.streaming_tool_output.clear();
 	}
 
 	/// Toggle expanded/collapsed state for all tool output blocks (Ctrl+O).
@@ -266,11 +270,24 @@ impl ChatComponent {
 				self.loader.start();
 			},
 			None => {
-				// Reset to "Thinking..." for the next LLM turn.
+				// Tool finished — clear streaming output and reset spinner.
+				self.streaming_tool_output.clear();
 				self.loader.set_message("Thinking...");
 			},
 		}
 		self.tool_executing = name;
+	}
+
+	/// Append incremental output from a running tool.
+	///
+	/// Updates the spinner message with the latest non-empty line so the
+	/// user sees real-time progress for long-running commands.
+	pub fn append_tool_output(&mut self, chunk: &str) {
+		self.streaming_tool_output.push_str(chunk);
+		if let Some(line) = chunk.lines().last().filter(|l| !l.is_empty()) {
+			let truncated = if line.len() > 60 { &line[..line.floor_char_boundary(60)] } else { line };
+			self.loader.set_message(&format!("  {truncated}"));
+		}
 	}
 
 	/// Look up the tool name and input args for a given `tool_use_id` by

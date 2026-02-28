@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{path::Path, sync::Arc};
 
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
@@ -20,6 +20,14 @@ pub struct ToolOutput {
 	pub is_error: bool,
 }
 
+/// Callback type for streaming incremental tool output to the UI.
+///
+/// Takes a `&str` slice (not `String`) to avoid allocation per chunk.
+/// Synchronous (`Fn`, not `async`) — the agent loop bridges to the async
+/// event channel via `try_send()`. Uses `Arc` so the callback can be
+/// cheaply cloned into inner closures (e.g. bash `on_chunk`).
+pub type OnToolUpdate = Arc<dyn Fn(&str) + Send + Sync>;
+
 /// Trait for tools that the AI can invoke.
 #[async_trait]
 pub trait Tool: Send + Sync {
@@ -39,10 +47,14 @@ pub trait Tool: Send + Sync {
 	}
 
 	/// Execute the tool with the given input.
+	///
+	/// The optional `on_update` callback streams incremental output chunks
+	/// to the UI during execution (e.g. for long-running bash commands).
 	async fn execute(
 		&self,
 		input: serde_json::Value,
 		cwd: &Path,
 		cancel: &CancellationToken,
+		on_update: Option<&OnToolUpdate>,
 	) -> anyhow::Result<ToolOutput>;
 }

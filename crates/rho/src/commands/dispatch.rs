@@ -44,7 +44,7 @@ pub async fn execute_bang(
 	let cwd = std::env::current_dir()?;
 	let ct = tokio_util::sync::CancellationToken::new();
 	tools
-		.execute("bash", serde_json::json!({"command": command}), &cwd, &ct)
+		.execute("bash", serde_json::json!({"command": command}), &cwd, &ct, None)
 		.await
 }
 

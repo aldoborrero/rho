@@ -11,7 +11,7 @@ use crate::{
 	convert,
 	events::{AgentEvent, AgentOutcome},
 	registry::ToolRegistry,
-	tools::Concurrency,
+	tools::{Concurrency, OnToolUpdate},
 	types::{ContentBlock, Message, ToolResultMessage, Usage},
 };
 
@@ -230,26 +230,22 @@ pub async fn run_agent_loop(
 			// then run alone.
 			let cancel = config.abort.clone().unwrap_or_default();
 			let mut results: Vec<Option<(Arc<String>, bool)>> = vec![None; tool_uses.len()];
-			let mut pending_shared: Vec<(usize, &str, &serde_json::Value)> = Vec::new();
+			let mut pending_shared: Vec<(usize, &str, &str, &serde_json::Value)> = Vec::new();
 
-			for (batch_idx, &(_, _id, name, input)) in tool_uses.iter().enumerate() {
+			for (batch_idx, &(_, id, name, input)) in tool_uses.iter().enumerate() {
 				if tools.concurrency(name) == Concurrency::Shared {
-					pending_shared.push((batch_idx, name, input));
+					pending_shared.push((batch_idx, id, name, input));
 				} else {
 					// Barrier: flush all pending shared tools first.
 					if !pending_shared.is_empty() {
 						let batch = std::mem::take(&mut pending_shared);
-						let futures = batch.iter().map(|&(_, n, inp)| {
-							tools.execute(n, inp.clone(), &config.cwd, &cancel)
-						});
-						let batch_results = join_all(futures).await;
-						for (&(bi, ..), result) in batch.iter().zip(batch_results) {
-							results[bi] = Some(wrap_tool_result(result));
-						}
+						flush_shared_batch(&batch, tools, &config.cwd, &cancel, &event_tx, &mut results)
+							.await;
 					}
 					// Execute exclusive tool alone.
+					let cb = make_update_callback(&event_tx, id);
 					let result =
-						tools.execute(name, input.clone(), &config.cwd, &cancel).await;
+						tools.execute(name, input.clone(), &config.cwd, &cancel, Some(&cb)).await;
 					results[batch_idx] = Some(wrap_tool_result(result));
 				}
 			}
@@ -257,13 +253,8 @@ pub async fn run_agent_loop(
 			// Flush remaining shared tools.
 			if !pending_shared.is_empty() {
 				let batch = std::mem::take(&mut pending_shared);
-				let futures = batch
-					.iter()
-					.map(|&(_, n, inp)| tools.execute(n, inp.clone(), &config.cwd, &cancel));
-				let batch_results = join_all(futures).await;
-				for (&(bi, ..), result) in batch.iter().zip(batch_results) {
-					results[bi] = Some(wrap_tool_result(result));
-				}
+				flush_shared_batch(&batch, tools, &config.cwd, &cancel, &event_tx, &mut results)
+					.await;
 			}
 
 			// Emit results and append to histories in original order.
@@ -315,6 +306,50 @@ pub async fn run_agent_loop(
 		};
 		return emit_done(outcome, &event_tx).await;
 	}
+}
+
+/// Flush a batch of pending shared tools: create per-tool update callbacks,
+/// run all in parallel via `join_all`, and store the results.
+#[allow(clippy::future_not_send, reason = "ToolRegistry contains non-Send tools")]
+async fn flush_shared_batch(
+	batch: &[(usize, &str, &str, &serde_json::Value)],
+	tools: &ToolRegistry,
+	cwd: &std::path::Path,
+	cancel: &CancellationToken,
+	event_tx: &mpsc::Sender<AgentEvent>,
+	results: &mut [Option<(Arc<String>, bool)>],
+) {
+	let callbacks: Vec<OnToolUpdate> = batch
+		.iter()
+		.map(|&(_, tid, _, _)| make_update_callback(event_tx, tid))
+		.collect();
+	let futures = batch.iter().zip(callbacks.iter()).map(|(&(_, _, n, inp), cb)| {
+		tools.execute(n, inp.clone(), cwd, cancel, Some(cb))
+	});
+	let batch_results = join_all(futures).await;
+	for (&(bi, ..), result) in batch.iter().zip(batch_results) {
+		results[bi] = Some(wrap_tool_result(result));
+	}
+}
+
+/// Create an [`OnToolUpdate`] callback that forwards chunks to the event
+/// channel as [`AgentEvent::ToolExecutionUpdate`].
+///
+/// Uses `try_send` (non-blocking) so the synchronous callback never blocks
+/// a tokio worker thread. If the channel is full the update is silently
+/// dropped (acceptable for UI streaming).
+fn make_update_callback(
+	event_tx: &mpsc::Sender<AgentEvent>,
+	tool_use_id: &str,
+) -> OnToolUpdate {
+	let tx = event_tx.clone();
+	let id = tool_use_id.to_owned();
+	std::sync::Arc::new(move |content: &str| {
+		let _ = tx.try_send(AgentEvent::ToolExecutionUpdate {
+			id:      id.clone(),
+			content: content.to_owned(),
+		});
+	})
 }
 
 /// Check if the loop should stop — either the abort token is cancelled or the

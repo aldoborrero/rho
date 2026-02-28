@@ -13,6 +13,8 @@ pub enum AgentEvent {
 	ThinkingDelta(String),
 	/// A tool call is about to be executed.
 	ToolCallStart { id: String, name: String },
+	/// Incremental output from a running tool (for real-time UI updates).
+	ToolExecutionUpdate { id: String, content: String },
 	/// A tool call completed.
 	ToolCallResult { id: String, is_error: bool },
 	/// The assistant message is complete (for session persistence).

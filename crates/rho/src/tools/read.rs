@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use tokio::fs;
 use tokio_util::sync::CancellationToken;
 
-use super::{Tool, ToolOutput};
+use super::{OnToolUpdate, Tool, ToolOutput};
 
 /// Default maximum number of lines to read.
 const DEFAULT_LIMIT: usize = 2000;
@@ -44,7 +44,7 @@ impl Tool for ReadTool {
 		})
 	}
 
-	async fn execute(&self, input: Value, cwd: &Path, _cancel: &CancellationToken) -> anyhow::Result<ToolOutput> {
+	async fn execute(&self, input: Value, cwd: &Path, _cancel: &CancellationToken, _on_update: Option<&OnToolUpdate>) -> anyhow::Result<ToolOutput> {
 		let raw_path = input
 			.get("path")
 			.and_then(Value::as_str)
@@ -128,7 +128,7 @@ mod tests {
 		let tool = ReadTool;
 		let ct = CancellationToken::new();
 		let result = tool
-			.execute(json!({"path": tmp.path().to_str().unwrap()}), Path::new("/"), &ct)
+			.execute(json!({"path": tmp.path().to_str().unwrap()}), Path::new("/"), &ct, None)
 			.await
 			.unwrap();
 		assert!(!result.is_error);
@@ -153,6 +153,7 @@ mod tests {
 				json!({"path": tmp.path().to_str().unwrap(), "offset": 3, "limit": 2}),
 				Path::new("/"),
 				&ct,
+				None,
 			)
 			.await
 			.unwrap();
@@ -168,7 +169,7 @@ mod tests {
 		let tool = ReadTool;
 		let ct = CancellationToken::new();
 		let result = tool
-			.execute(json!({"path": "/tmp/nonexistent_file_abc123xyz"}), Path::new("/"), &ct)
+			.execute(json!({"path": "/tmp/nonexistent_file_abc123xyz"}), Path::new("/"), &ct, None)
 			.await
 			.unwrap();
 		assert!(result.is_error);
@@ -183,7 +184,7 @@ mod tests {
 		let tool = ReadTool;
 		let ct = CancellationToken::new();
 		let result = tool
-			.execute(json!({"path": dir.path().to_str().unwrap()}), Path::new("/"), &ct)
+			.execute(json!({"path": dir.path().to_str().unwrap()}), Path::new("/"), &ct, None)
 			.await
 			.unwrap();
 		assert!(!result.is_error);

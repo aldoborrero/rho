@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
-use super::{Concurrency, Tool, ToolOutput};
+use super::{Concurrency, OnToolUpdate, Tool, ToolOutput};
 
 /// Tool that copies text to the system clipboard.
 pub struct ClipboardTool;
@@ -36,7 +36,7 @@ impl Tool for ClipboardTool {
 		Concurrency::Exclusive
 	}
 
-	async fn execute(&self, input: Value, _cwd: &Path, _cancel: &CancellationToken) -> anyhow::Result<ToolOutput> {
+	async fn execute(&self, input: Value, _cwd: &Path, _cancel: &CancellationToken, _on_update: Option<&OnToolUpdate>) -> anyhow::Result<ToolOutput> {
 		let text = input
 			.get("text")
 			.and_then(Value::as_str)
@@ -67,7 +67,7 @@ mod tests {
 	async fn test_clipboard_missing_text() {
 		let tool = ClipboardTool;
 		let ct = CancellationToken::new();
-		let result = tool.execute(json!({}), Path::new("/"), &ct).await;
+		let result = tool.execute(json!({}), Path::new("/"), &ct, None).await;
 		assert!(result.is_err(), "Expected error for missing text parameter");
 	}
 }
