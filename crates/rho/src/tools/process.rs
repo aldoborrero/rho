@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
-use super::{Tool, ToolOutput};
+use super::{Concurrency, Tool, ToolOutput};
 
 /// Default signal for `kill_tree` (SIGTERM).
 const DEFAULT_SIGNAL: i32 = 15;
@@ -41,6 +41,10 @@ impl Tool for ProcessTool {
 			 },
 			 "required": ["action", "pid"]
 		})
+	}
+
+	fn concurrency(&self) -> Concurrency {
+		Concurrency::Exclusive
 	}
 
 	async fn execute(&self, input: Value, _cwd: &Path, _cancel: &CancellationToken) -> anyhow::Result<ToolOutput> {

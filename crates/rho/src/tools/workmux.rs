@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
-use super::{Tool, ToolOutput};
+use super::{Concurrency, Tool, ToolOutput};
 
 /// Tool that manages terminal multiplexer windows and agents.
 pub struct WorkmuxTool;
@@ -17,6 +17,10 @@ impl Tool for WorkmuxTool {
 
 	fn description(&self) -> &'static str {
 		include_str!("../prompts/tools/workmux.md")
+	}
+
+	fn concurrency(&self) -> Concurrency {
+		Concurrency::Exclusive
 	}
 
 	fn input_schema(&self) -> Value {

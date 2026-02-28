@@ -8,7 +8,7 @@ use rho_tools::shell::{ShellExecuteOptions, execute_shell};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
-use super::{Tool, ToolOutput};
+use super::{Concurrency, Tool, ToolOutput};
 
 /// Maximum output size in bytes (100 KB).
 const MAX_OUTPUT_BYTES: usize = 100 * 1024;
@@ -77,6 +77,10 @@ impl Tool for BashTool {
 			 },
 			 "required": ["command"]
 		})
+	}
+
+	fn concurrency(&self) -> Concurrency {
+		Concurrency::Exclusive
 	}
 
 	async fn execute(

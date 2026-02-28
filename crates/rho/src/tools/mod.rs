@@ -12,23 +12,23 @@ pub mod workmux;
 pub mod write;
 
 // Re-export Tool trait and ToolOutput from rho-agent.
-use registry::ToolRegistry;
-pub use rho_agent::tools::{Tool, ToolOutput};
+use registry::{ToolRegistry, ToolRegistryBuilder};
+pub use rho_agent::tools::{Concurrency, Tool, ToolOutput};
 
 /// Creates a [`ToolRegistry`] pre-populated with all built-in tools.
 #[must_use]
 pub fn create_default_registry() -> ToolRegistry {
-	let mut registry = ToolRegistry::new();
-	registry.register(Box::new(bash::BashTool));
-	registry.register(Box::new(read::ReadTool));
-	registry.register(Box::new(write::WriteTool));
-	registry.register(Box::new(grep::GrepTool));
-	registry.register(Box::new(find::FindTool));
-	registry.register(Box::new(fuzzy_find::FuzzyFindTool));
-	registry.register(Box::new(clipboard::ClipboardTool));
-	registry.register(Box::new(html_to_markdown::HtmlToMarkdownTool));
-	registry.register(Box::new(process::ProcessTool));
-	registry.register(Box::new(image::ImageTool));
-	registry.register(Box::new(workmux::WorkmuxTool));
-	registry
+	let mut builder = ToolRegistryBuilder::new();
+	builder.register(Box::new(bash::BashTool));
+	builder.register(Box::new(read::ReadTool));
+	builder.register(Box::new(write::WriteTool));
+	builder.register(Box::new(grep::GrepTool));
+	builder.register(Box::new(find::FindTool));
+	builder.register(Box::new(fuzzy_find::FuzzyFindTool));
+	builder.register(Box::new(clipboard::ClipboardTool));
+	builder.register(Box::new(html_to_markdown::HtmlToMarkdownTool));
+	builder.register(Box::new(process::ProcessTool));
+	builder.register(Box::new(image::ImageTool));
+	builder.register(Box::new(workmux::WorkmuxTool));
+	builder.build()
 }

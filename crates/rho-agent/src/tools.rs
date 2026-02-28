@@ -3,6 +3,17 @@ use std::path::Path;
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
+/// Concurrency mode for tool scheduling when multiple calls arrive in one turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Concurrency {
+	/// Can run alongside other shared tools.
+	#[default]
+	Shared,
+	/// Runs alone — all prior tools must finish before this starts,
+	/// and this must finish before the next tool starts.
+	Exclusive,
+}
+
 /// Output from executing a tool.
 pub struct ToolOutput {
 	pub content:  String,
@@ -20,6 +31,12 @@ pub trait Tool: Send + Sync {
 
 	/// JSON Schema for the tool's input.
 	fn input_schema(&self) -> serde_json::Value;
+
+	/// Concurrency mode. Default: [`Concurrency::Shared`] (safe to run in
+	/// parallel with other shared tools).
+	fn concurrency(&self) -> Concurrency {
+		Concurrency::Shared
+	}
 
 	/// Execute the tool with the given input.
 	async fn execute(

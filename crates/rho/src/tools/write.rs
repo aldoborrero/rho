@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use tokio::fs;
 use tokio_util::sync::CancellationToken;
 
-use super::{Tool, ToolOutput};
+use super::{Concurrency, Tool, ToolOutput};
 
 /// Tool that writes content to a file.
 pub struct WriteTool;
@@ -35,6 +35,10 @@ impl Tool for WriteTool {
 			 },
 			 "required": ["path", "content"]
 		})
+	}
+
+	fn concurrency(&self) -> Concurrency {
+		Concurrency::Exclusive
 	}
 
 	async fn execute(&self, input: Value, cwd: &Path, _cancel: &CancellationToken) -> anyhow::Result<ToolOutput> {

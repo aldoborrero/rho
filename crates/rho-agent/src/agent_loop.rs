@@ -1,13 +1,17 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 use tokio_util::sync::CancellationToken;
 
+use futures_util::future::join_all;
+
 use crate::{
 	convert,
 	events::{AgentEvent, AgentOutcome},
 	registry::ToolRegistry,
+	tools::Concurrency,
 	types::{ContentBlock, Message, ToolResultMessage, Usage},
 };
 
@@ -23,7 +27,7 @@ pub enum ThinkingLevel {
 
 /// Configuration for a single agent loop run.
 pub struct AgentConfig {
-	pub system_prompt: String,
+	pub system_prompt: Arc<String>,
 	pub max_tokens:    u32,
 	pub thinking:      ThinkingLevel,
 	pub retry:         rho_ai::RetryConfig,
@@ -60,43 +64,55 @@ pub async fn run_agent_loop(
 	let mut retry_attempt: u32 = 0;
 	let mut cumulative_usage: Option<Usage> = None;
 
+	// Pre-convert tool definitions (immutable across turns).
+	let mut ai_tools = convert::to_ai_tool_defs(&tools.definitions());
+	// Pre-convert the initial message history; new messages are appended
+	// incrementally so we never re-convert the full history.
+	let mut ai_messages = convert::to_ai_messages(messages);
+
+	// Build StreamOptions once — all fields are invariant across turns.
+	let temperature = config.temperature.filter(|&t| t >= 0.0);
+	let options = rho_ai::types::StreamOptions {
+		api_key:     config.api_key.clone(),
+		max_tokens:  Some(max_tokens_for(config.thinking, config.max_tokens)),
+		reasoning:   thinking_to_reasoning(config.thinking),
+		temperature,
+		retry:       config.retry.clone(),
+		abort:       config.abort.clone(),
+		..Default::default()
+	};
+
 	loop {
 		// Checkpoint 1: before starting a new turn.
-		if let Some(outcome) = check_cancelled(config.abort.as_ref(), &event_tx).await {
+		if let Some(outcome) = check_should_stop(config.abort.as_ref(), &event_tx).await {
 			return outcome;
 		}
 
 		turn += 1;
 		let _ = event_tx.send(AgentEvent::TurnStart { turn }).await;
 
-		// Build rho-ai context
-		let ai_messages = convert::to_ai_messages(messages);
-		let ai_tools = convert::to_ai_tool_defs(&tools.definitions());
-		let context = rho_ai::types::Context {
+		// Build context by temporarily swapping the cached vecs in (zero
+		// allocation). `rho_ai::stream` serialises the context into the HTTP
+		// request body immediately; the returned `AssistantMessageStream`
+		// (an mpsc receiver) does not borrow it.
+		let mut context = rho_ai::types::Context {
 			system_prompt: Some(config.system_prompt.clone()),
-			messages:      ai_messages,
-			tools:         ai_tools,
+			messages:      std::mem::take(&mut ai_messages),
+			tools:         std::mem::take(&mut ai_tools),
 		};
 
-		let temperature = config
-			.temperature
-			.filter(|&t| t >= 0.0);
-		let options = rho_ai::types::StreamOptions {
-			api_key: config.api_key.clone(),
-			max_tokens: Some(max_tokens_for(config.thinking, config.max_tokens)),
-			reasoning: thinking_to_reasoning(config.thinking),
-			temperature,
-			retry: config.retry.clone(),
-			abort: config.abort.clone(),
-			..Default::default()
-		};
-
-		// Stream from rho-ai
 		let stream = rho_ai::stream(model, &context, &options);
+
+		// Reclaim the vecs — stream no longer borrows context.
+		ai_messages = std::mem::take(&mut context.messages);
+		ai_tools = std::mem::take(&mut context.tools);
+		drop(context);
+
 		let mut event_stream = stream.into_stream();
 
 		let mut stream_error = false;
-		let mut done_message: Option<crate::types::AssistantMessage> = None;
+		let mut done_agent_msg: Option<crate::types::AssistantMessage> = None;
+		let mut done_ai_msg: Option<rho_ai::types::AssistantMessage> = None;
 
 		while let Some(event) = event_stream.next().await {
 			match event {
@@ -107,8 +123,8 @@ pub async fn run_agent_loop(
 					let _ = event_tx.send(AgentEvent::ThinkingDelta(thinking)).await;
 				},
 				rho_ai::StreamEvent::Done { message, .. } => {
-					let agent_message = convert::from_ai_assistant(&message);
-					done_message = Some(agent_message);
+					done_agent_msg = Some(convert::from_ai_assistant(&message));
+					done_ai_msg = Some(message);
 				},
 				rho_ai::StreamEvent::Error { error, retryable, retry_after_ms } => {
 					let error_msg = error.to_string();
@@ -140,7 +156,7 @@ pub async fn run_agent_loop(
 		}
 
 		// If we have no done message, the stream ended unexpectedly
-		let Some(message) = done_message else {
+		let (Some(message), Some(ai_msg)) = (done_agent_msg, done_ai_msg) else {
 			return emit_done(
 				AgentOutcome::Failed { error: "Stream ended without a Done event".to_owned() },
 				&event_tx,
@@ -174,59 +190,114 @@ pub async fn run_agent_loop(
 			.iter()
 			.any(|b| matches!(b, ContentBlock::ToolUse { .. }));
 
-		// Append assistant message to context
+		// Append assistant message to both histories. Push the original
+		// ai-format message directly — no redundant agent→ai reconversion.
 		messages.push(Message::Assistant(message.clone()));
+		ai_messages.push(rho_ai::types::Message::Assistant(ai_msg));
 
 		if has_tool_calls {
-			// Execute tools
-			for block in &message.content {
-				if let ContentBlock::ToolUse { id, name, input } = block {
-					// Checkpoint 2: before each tool execution.
-					if let Some(outcome) = check_cancelled(config.abort.as_ref(), &event_tx).await {
-						return outcome;
+			// Collect tool-use blocks with their original index for ordered
+			// result emission.
+			let tool_uses: Vec<(usize, &str, &str, &serde_json::Value)> = message
+				.content
+				.iter()
+				.enumerate()
+				.filter_map(|(idx, b)| match b {
+					ContentBlock::ToolUse { id, name, input } => {
+						Some((idx, id.as_str(), name.as_str(), input))
+					},
+					_ => None,
+				})
+				.collect();
+
+			// Checkpoint 2: before executing any tools.
+			if let Some(outcome) = check_should_stop(config.abort.as_ref(), &event_tx).await {
+				return outcome;
+			}
+
+			// Emit all ToolCallStart events upfront.
+			for &(_, id, name, _) in &tool_uses {
+				let _ = event_tx
+					.send(AgentEvent::ToolCallStart {
+						id:   id.to_owned(),
+						name: name.to_owned(),
+					})
+					.await;
+			}
+
+			// Execute with barrier scheduling: shared tools run in
+			// parallel, exclusive tools flush all pending work first,
+			// then run alone.
+			let cancel = config.abort.clone().unwrap_or_default();
+			let mut results: Vec<Option<(Arc<String>, bool)>> = vec![None; tool_uses.len()];
+			let mut pending_shared: Vec<(usize, &str, &serde_json::Value)> = Vec::new();
+
+			for (batch_idx, &(_, _id, name, input)) in tool_uses.iter().enumerate() {
+				if tools.concurrency(name) == Concurrency::Shared {
+					pending_shared.push((batch_idx, name, input));
+				} else {
+					// Barrier: flush all pending shared tools first.
+					if !pending_shared.is_empty() {
+						let batch = std::mem::take(&mut pending_shared);
+						let futures = batch.iter().map(|&(_, n, inp)| {
+							tools.execute(n, inp.clone(), &config.cwd, &cancel)
+						});
+						let batch_results = join_all(futures).await;
+						for (&(bi, ..), result) in batch.iter().zip(batch_results) {
+							results[bi] = Some(wrap_tool_result(result));
+						}
 					}
-
-					let _ = event_tx
-						.send(AgentEvent::ToolCallStart { id: id.clone(), name: name.clone() })
-						.await;
-
-					let cancel = config.abort.clone().unwrap_or_default();
-					let tool_result = tools
-						.execute(name, input.clone(), &config.cwd, &cancel)
-						.await;
-
-					let (content, is_error) = match tool_result {
-						Ok(output) => (output.content, output.is_error),
-						Err(e) => (format!("Tool execution error: {e}"), true),
-					};
-
-					let _ = event_tx
-						.send(AgentEvent::ToolCallResult {
-							id: id.clone(),
-							is_error,
-							content: content.clone(),
-						})
-						.await;
-
-					// Notify for session persistence
-					let _ = event_tx
-						.send(AgentEvent::ToolResultComplete {
-							tool_use_id: id.clone(),
-							content: content.clone(),
-							is_error,
-						})
-						.await;
-
-					// Append tool result to context
-					messages.push(Message::ToolResult(ToolResultMessage {
-						tool_use_id: id.clone(),
-						content,
-						is_error,
-					}));
+					// Execute exclusive tool alone.
+					let result =
+						tools.execute(name, input.clone(), &config.cwd, &cancel).await;
+					results[batch_idx] = Some(wrap_tool_result(result));
 				}
 			}
+
+			// Flush remaining shared tools.
+			if !pending_shared.is_empty() {
+				let batch = std::mem::take(&mut pending_shared);
+				let futures = batch
+					.iter()
+					.map(|&(_, n, inp)| tools.execute(n, inp.clone(), &config.cwd, &cancel));
+				let batch_results = join_all(futures).await;
+				for (&(bi, ..), result) in batch.iter().zip(batch_results) {
+					results[bi] = Some(wrap_tool_result(result));
+				}
+			}
+
+			// Emit results and append to histories in original order.
+			for (batch_idx, &(_, id, _, _)) in tool_uses.iter().enumerate() {
+				let (content, is_error) = results[batch_idx]
+					.take()
+					.expect("all tool results should be populated");
+
+				let _ = event_tx
+					.send(AgentEvent::ToolCallResult {
+						id: id.to_owned(),
+						is_error,
+					})
+					.await;
+
+				let _ = event_tx
+					.send(AgentEvent::ToolResultComplete {
+						tool_use_id: id.to_owned(),
+						content:     Arc::clone(&content),
+						is_error,
+					})
+					.await;
+
+				let tool_msg = Message::ToolResult(ToolResultMessage {
+					tool_use_id: id.to_owned(),
+					content,
+					is_error,
+				});
+				convert::push_ai_message(&mut ai_messages, &tool_msg);
+				messages.push(tool_msg);
+			}
+
 			// Checkpoint 3: before sending tool results back to LLM.
-			if let Some(outcome) = check_cancelled(config.abort.as_ref(), &event_tx).await {
+			if let Some(outcome) = check_should_stop(config.abort.as_ref(), &event_tx).await {
 				return outcome;
 			}
 			continue;
@@ -246,8 +317,9 @@ pub async fn run_agent_loop(
 	}
 }
 
-/// Check if the abort token is cancelled. Returns `Some(Cancelled)` if so.
-async fn check_cancelled(
+/// Check if the loop should stop — either the abort token is cancelled or the
+/// event channel has been closed (consumer dropped).
+async fn check_should_stop(
 	abort: Option<&CancellationToken>,
 	event_tx: &mpsc::Sender<AgentEvent>,
 ) -> Option<AgentOutcome> {
@@ -256,7 +328,20 @@ async fn check_cancelled(
 		let _ = event_tx.send(AgentEvent::Done(outcome.clone())).await;
 		return Some(outcome);
 	}
+	if event_tx.is_closed() {
+		return Some(AgentOutcome::Failed {
+			error: "Event channel closed".to_owned(),
+		});
+	}
 	None
+}
+
+/// Convert a tool execution result into an `(Arc<String>, is_error)` pair.
+fn wrap_tool_result(result: anyhow::Result<crate::tools::ToolOutput>) -> (Arc<String>, bool) {
+	match result {
+		Ok(output) => (Arc::new(output.content), output.is_error),
+		Err(e) => (Arc::new(format!("Tool execution error: {e}")), true),
+	}
 }
 
 /// Emit the [`AgentEvent::Done`] event and return the outcome.

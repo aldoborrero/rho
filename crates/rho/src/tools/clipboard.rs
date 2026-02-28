@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
-use super::{Tool, ToolOutput};
+use super::{Concurrency, Tool, ToolOutput};
 
 /// Tool that copies text to the system clipboard.
 pub struct ClipboardTool;
@@ -30,6 +30,10 @@ impl Tool for ClipboardTool {
 			 },
 			 "required": ["text"]
 		})
+	}
+
+	fn concurrency(&self) -> Concurrency {
+		Concurrency::Exclusive
 	}
 
 	async fn execute(&self, input: Value, _cwd: &Path, _cancel: &CancellationToken) -> anyhow::Result<ToolOutput> {

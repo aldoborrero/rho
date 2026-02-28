@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
-use super::{Tool, ToolOutput};
+use super::{Concurrency, Tool, ToolOutput};
 
 /// Tool that provides image information and resizing.
 pub struct ImageTool;
@@ -46,6 +46,10 @@ impl Tool for ImageTool {
 			 },
 			 "required": ["action", "path"]
 		})
+	}
+
+	fn concurrency(&self) -> Concurrency {
+		Concurrency::Exclusive
 	}
 
 	async fn execute(&self, input: Value, cwd: &Path, _cancel: &CancellationToken) -> anyhow::Result<ToolOutput> {
