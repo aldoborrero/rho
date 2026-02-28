@@ -1,1 +1,1 @@
-pub use rho_agent::registry::ToolRegistry;
+pub use rho_agent::registry::{ToolRegistry, ToolRegistryBuilder};

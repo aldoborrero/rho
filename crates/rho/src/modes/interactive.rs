@@ -153,7 +153,7 @@ fn spawn_agent(
 	let agent_model = model.clone();
 	let agent_tools = tools.clone();
 	let agent_config = AgentConfig {
-		system_prompt: system_prompt.to_owned(),
+		system_prompt: Arc::new(system_prompt.to_owned()),
 		max_tokens:    settings.agent.max_tokens,
 		thinking:      to_agent_thinking(settings.agent.thinking),
 		retry:         rho_ai::RetryConfig {

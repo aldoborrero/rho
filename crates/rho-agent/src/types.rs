@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 
 // === Internal Message Types ===
@@ -32,7 +34,7 @@ pub struct AssistantMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResultMessage {
 	pub tool_use_id: String,
-	pub content:     String,
+	pub content:     Arc<String>,
 	#[serde(default)]
 	pub is_error:    bool,
 }

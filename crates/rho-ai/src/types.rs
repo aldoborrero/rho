@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -142,7 +143,7 @@ pub enum ToolChoice {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Context {
-	pub system_prompt: Option<String>,
+	pub system_prompt: Option<Arc<String>>,
 	pub messages:      Vec<Message>,
 	pub tools:         Vec<ToolDefinition>,
 }
@@ -308,7 +309,7 @@ mod tests {
 	#[test]
 	fn context_with_tools() {
 		let ctx = Context {
-			system_prompt: Some("You are helpful.".into()),
+			system_prompt: Some(Arc::new("You are helpful.".into())),
 			messages:      vec![],
 			tools:         vec![ToolDefinition {
 				name:         "bash".into(),

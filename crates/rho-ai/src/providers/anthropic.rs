@@ -571,6 +571,8 @@ pub(crate) fn build_request_body(
 
 #[cfg(test)]
 mod tests {
+	use std::sync::Arc;
+
 	use super::*;
 
 	#[test]
@@ -584,7 +586,7 @@ mod tests {
 	fn build_request_basic() {
 		let model = test_model();
 		let ctx = Context {
-			system_prompt: Some("You are helpful.".into()),
+			system_prompt: Some(Arc::new("You are helpful.".into())),
 			messages:      vec![Message::User(UserMessage {
 				content: vec![UserContent::Text { text: "hi".into() }],
 			})],
@@ -848,7 +850,7 @@ mod tests {
 	fn system_prompt_with_cache_control() {
 		let model = test_model();
 		let ctx = Context {
-			system_prompt: Some("Be helpful.".into()),
+			system_prompt: Some(Arc::new("Be helpful.".into())),
 			messages:      vec![Message::User(UserMessage {
 				content: vec![UserContent::Text { text: "hi".into() }],
 			})],
@@ -866,7 +868,7 @@ mod tests {
 	fn system_prompt_without_cache_control() {
 		let model = test_model();
 		let ctx = Context {
-			system_prompt: Some("Be helpful.".into()),
+			system_prompt: Some(Arc::new("Be helpful.".into())),
 			messages:      vec![Message::User(UserMessage {
 				content: vec![UserContent::Text { text: "hi".into() }],
 			})],

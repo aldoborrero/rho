@@ -78,6 +78,8 @@ fn serialize_assistant(output: &mut String, msg: &AssistantMessage) {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use std::sync::Arc;
+
 	use crate::ai::types::{ToolResultMessage, UserMessage};
 
 	#[test]
@@ -91,7 +93,7 @@ mod tests {
 	fn serialize_tool_result() {
 		let msgs = vec![Message::ToolResult(ToolResultMessage {
 			tool_use_id: "t1".to_owned(),
-			content:     "file contents".to_owned(),
+			content:     Arc::new("file contents".to_owned()),
 			is_error:    false,
 		})];
 		let result = serialize_conversation(&msgs);
@@ -161,7 +163,7 @@ mod tests {
 			}),
 			Message::ToolResult(ToolResultMessage {
 				tool_use_id: "t1".to_owned(),
-				content:     "fn main() {}".to_owned(),
+				content:     Arc::new("fn main() {}".to_owned()),
 				is_error:    false,
 			}),
 			Message::Assistant(AssistantMessage {

@@ -542,6 +542,8 @@ pub(crate) fn build_request_body(
 
 #[cfg(test)]
 mod tests {
+	use std::sync::Arc;
+
 	use super::*;
 
 	#[test]
@@ -602,7 +604,7 @@ mod tests {
 	fn build_request_includes_stream_options() {
 		let model = test_model();
 		let ctx = Context {
-			system_prompt: Some("system".into()),
+			system_prompt: Some(Arc::new("system".into())),
 			messages:      vec![],
 			tools:         vec![],
 		};
@@ -681,7 +683,7 @@ mod tests {
 	fn build_request_system_prompt_as_message() {
 		let model = test_model();
 		let ctx = Context {
-			system_prompt: Some("You are helpful.".into()),
+			system_prompt: Some(Arc::new("You are helpful.".into())),
 			messages:      vec![Message::User(UserMessage {
 				content: vec![UserContent::Text { text: "hi".into() }],
 			})],

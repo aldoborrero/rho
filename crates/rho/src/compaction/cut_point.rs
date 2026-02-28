@@ -120,7 +120,7 @@ mod tests {
 			timestamp: ts(),
 			message:   Message::ToolResult(crate::ai::types::ToolResultMessage {
 				tool_use_id: "t1".to_owned(),
-				content:     "result".to_owned(),
+				content:     std::sync::Arc::new("result".to_owned()),
 				is_error:    false,
 			}),
 		})

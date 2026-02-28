@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::types::{AssistantMessage, Usage};
 
 /// Events emitted by the agent loop for UI consumption.
@@ -12,11 +14,11 @@ pub enum AgentEvent {
 	/// A tool call is about to be executed.
 	ToolCallStart { id: String, name: String },
 	/// A tool call completed.
-	ToolCallResult { id: String, is_error: bool, content: String },
+	ToolCallResult { id: String, is_error: bool },
 	/// The assistant message is complete (for session persistence).
 	MessageComplete(AssistantMessage),
 	/// A tool result message was created (for session persistence).
-	ToolResultComplete { tool_use_id: String, content: String, is_error: bool },
+	ToolResultComplete { tool_use_id: String, content: Arc<String>, is_error: bool },
 	/// A retry is scheduled after a transient error.
 	RetryScheduled { attempt: u32, delay_ms: u64, error: String },
 	/// The agent loop completed.

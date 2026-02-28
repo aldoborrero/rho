@@ -416,7 +416,7 @@ impl ChatComponent {
 			|(n, a)| (n.to_owned(), a.clone()),
 		);
 		let renderer = get_tool_renderer(&tool_name);
-		let display = ToolResultDisplay { content: msg.content.clone(), is_error: msg.is_error };
+		let display = ToolResultDisplay { content: (*msg.content).clone(), is_error: msg.is_error };
 		let lines =
 			renderer.render_combined(&args, &display, self.tools_expanded, &self.theme, width);
 
@@ -631,6 +631,8 @@ impl Component for ChatComponent {
 
 #[cfg(test)]
 mod tests {
+	use std::sync::Arc;
+
 	use rho_tui::theme::ColorMode;
 
 	use super::*;
@@ -781,7 +783,7 @@ mod tests {
 		add_tool_use(&mut chat, "tu_1", "Bash", serde_json::json!({ "command": "ls" }));
 		chat.add_message(Message::ToolResult(ToolResultMessage {
 			tool_use_id: "tu_1".to_owned(),
-			content:     "file contents here".to_owned(),
+			content:     Arc::new("file contents here".to_owned()),
 			is_error:    false,
 		}));
 		let lines = chat.render(80);
@@ -802,7 +804,7 @@ mod tests {
 		add_tool_use(&mut chat, "tu_2", "Bash", serde_json::json!({ "command": "bad" }));
 		chat.add_message(Message::ToolResult(ToolResultMessage {
 			tool_use_id: "tu_2".to_owned(),
-			content:     "command failed".to_owned(),
+			content:     Arc::new("command failed".to_owned()),
 			is_error:    true,
 		}));
 		let lines = chat.render(80);
@@ -822,7 +824,7 @@ mod tests {
 		// No preceding ToolUse — falls back to "Unknown"
 		chat.add_message(Message::ToolResult(ToolResultMessage {
 			tool_use_id: "tu_orphan".to_owned(),
-			content:     "some output".to_owned(),
+			content:     Arc::new("some output".to_owned()),
 			is_error:    false,
 		}));
 		let lines = chat.render(80);
@@ -865,7 +867,7 @@ mod tests {
 		add_tool_use(&mut chat, "tu_1", "Bash", serde_json::json!({ "command": "echo hi" }));
 		chat.add_message(Message::ToolResult(ToolResultMessage {
 			tool_use_id: "tu_1".to_owned(),
-			content:     "hi".to_owned(),
+			content:     Arc::new("hi".to_owned()),
 			is_error:    false,
 		}));
 		// First render populates cache
@@ -949,7 +951,7 @@ mod tests {
 		add_tool_use(&mut chat, "tu_1", "Bash", serde_json::json!({ "command": "ls" }));
 		chat.add_message(Message::ToolResult(ToolResultMessage {
 			tool_use_id: "tu_1".to_owned(),
-			content:     "file.txt".to_owned(),
+			content:     Arc::new("file.txt".to_owned()),
 			is_error:    false,
 		}));
 		let lines = chat.render(80);
@@ -984,7 +986,7 @@ mod tests {
 		add_tool_use(&mut chat, "tu_1", "Bash", serde_json::json!({ "command": "echo hello" }));
 		chat.add_message(Message::ToolResult(ToolResultMessage {
 			tool_use_id: "tu_1".to_owned(),
-			content:     "hello".to_owned(),
+			content:     Arc::new("hello".to_owned()),
 			is_error:    false,
 		}));
 		let lines = chat.render(80);
@@ -1021,7 +1023,7 @@ mod tests {
 		// Only first tool has a result
 		chat.add_message(Message::ToolResult(ToolResultMessage {
 			tool_use_id: "tu_a".to_owned(),
-			content:     "file.txt".to_owned(),
+			content:     Arc::new("file.txt".to_owned()),
 			is_error:    false,
 		}));
 		let lines = chat.render(80);
@@ -1044,7 +1046,7 @@ mod tests {
 		assert!(!chat.has_tool_result("tu_1"), "no result yet");
 		chat.add_message(Message::ToolResult(ToolResultMessage {
 			tool_use_id: "tu_1".to_owned(),
-			content:     "ok".to_owned(),
+			content:     Arc::new("ok".to_owned()),
 			is_error:    false,
 		}));
 		assert!(chat.has_tool_result("tu_1"), "result exists");
@@ -1082,7 +1084,7 @@ mod tests {
 		for (i, _file) in ["src/a.rs", "src/b.rs", "src/c.rs"].iter().enumerate() {
 			chat.add_message(Message::ToolResult(ToolResultMessage {
 				tool_use_id: format!("tu_r{i}"),
-				content:     "ok".to_owned(),
+				content:     Arc::new("ok".to_owned()),
 				is_error:    false,
 			}));
 		}
@@ -1109,7 +1111,7 @@ mod tests {
 		add_tool_use(&mut chat, "tu_r0", "read", serde_json::json!({ "path": "foo.rs" }));
 		chat.add_message(Message::ToolResult(ToolResultMessage {
 			tool_use_id: "tu_r0".to_owned(),
-			content:     "ok".to_owned(),
+			content:     Arc::new("ok".to_owned()),
 			is_error:    false,
 		}));
 		let lines = chat.render(80);

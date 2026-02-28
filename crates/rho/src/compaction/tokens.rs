@@ -110,7 +110,7 @@ mod tests {
 	fn tool_result_tokens() {
 		let msg = Message::ToolResult(crate::ai::types::ToolResultMessage {
 			tool_use_id: "t1".to_owned(),
-			content:     "file contents here".to_owned(),
+			content:     std::sync::Arc::new("file contents here".to_owned()),
 			is_error:    false,
 		});
 		// 18 chars / 4 = 4.5 → ceil = 5

@@ -5,32 +5,34 @@ use crate::types::{AssistantMessage, ContentBlock, Message, StopReason, Usage};
 // ---------------------------------------------------------------------------
 
 /// Convert agent messages to rho-ai messages for provider calls.
+///
+/// `BashExecution` messages are silently skipped — they are an agent-internal
+/// concern and have no representation in the provider protocol.
 pub fn to_ai_messages(messages: &[Message]) -> Vec<rho_ai::types::Message> {
-	messages.iter().map(to_ai_message).collect()
+	messages.iter().filter_map(to_ai_message).collect()
 }
 
-fn to_ai_message(msg: &Message) -> rho_ai::types::Message {
+fn to_ai_message(msg: &Message) -> Option<rho_ai::types::Message> {
 	match msg {
-		Message::User(u) => rho_ai::types::Message::User(rho_ai::types::UserMessage {
+		Message::User(u) => Some(rho_ai::types::Message::User(rho_ai::types::UserMessage {
 			content: vec![rho_ai::types::UserContent::Text { text: u.content.clone() }],
-		}),
-		Message::Assistant(a) => rho_ai::types::Message::Assistant(rho_ai::types::AssistantMessage {
-			content:     a.content.iter().map(to_ai_content_block).collect(),
-			stop_reason: a.stop_reason.as_ref().map(to_ai_stop_reason),
-			usage:       a.usage.as_ref().map(to_ai_usage),
-		}),
+		})),
+		Message::Assistant(a) => {
+			Some(rho_ai::types::Message::Assistant(rho_ai::types::AssistantMessage {
+				content:     a.content.iter().map(to_ai_content_block).collect(),
+				stop_reason: a.stop_reason.as_ref().map(to_ai_stop_reason),
+				usage:       a.usage.as_ref().map(to_ai_usage),
+			}))
+		},
 		Message::ToolResult(t) => {
-			rho_ai::types::Message::ToolResult(rho_ai::types::ToolResultMessage {
+			Some(rho_ai::types::Message::ToolResult(rho_ai::types::ToolResultMessage {
 				tool_use_id: t.tool_use_id.clone(),
-				content:     vec![rho_ai::types::ToolResultContent::Text { text: t.content.clone() }],
+				content:     vec![rho_ai::types::ToolResultContent::Text { text: (*t.content).clone() }],
 				is_error:    t.is_error,
-			})
+			}))
 		},
-		Message::BashExecution(_) => {
-			unreachable!(
-				"BashExecution messages are filtered by build_context before reaching the provider"
-			)
-		},
+		// BashExecution is an agent-internal message with no provider equivalent.
+		Message::BashExecution(_) => None,
 	}
 }
 
@@ -112,6 +114,15 @@ const fn from_ai_usage(usage: &rho_ai::types::Usage) -> Usage {
 // Tool definition conversion
 // ---------------------------------------------------------------------------
 
+/// Convert a single agent message to rho-ai format and push it onto `dest`.
+///
+/// `BashExecution` messages are silently skipped.
+pub fn push_ai_message(dest: &mut Vec<rho_ai::types::Message>, msg: &Message) {
+	if let Some(ai_msg) = to_ai_message(msg) {
+		dest.push(ai_msg);
+	}
+}
+
 /// Convert agent tool definitions to rho-ai format.
 pub fn to_ai_tool_defs(
 	defs: &[crate::types::ToolDefinition],
@@ -128,6 +139,8 @@ pub fn to_ai_tool_defs(
 
 #[cfg(test)]
 mod tests {
+	use std::sync::Arc;
+
 	use super::*;
 	use crate::types::{ToolResultMessage, UserMessage};
 
@@ -196,7 +209,7 @@ mod tests {
 	fn test_tool_result_conversion() {
 		let messages = vec![Message::ToolResult(ToolResultMessage {
 			tool_use_id: "tu_123".to_owned(),
-			content:     "file1.txt\nfile2.txt".to_owned(),
+			content:     Arc::new("file1.txt\nfile2.txt".to_owned()),
 			is_error:    false,
 		})];
 
@@ -222,7 +235,7 @@ mod tests {
 	fn test_tool_result_with_error() {
 		let messages = vec![Message::ToolResult(ToolResultMessage {
 			tool_use_id: "tu_456".to_owned(),
-			content:     "command not found".to_owned(),
+			content:     Arc::new("command not found".to_owned()),
 			is_error:    true,
 		})];
 
@@ -250,7 +263,7 @@ mod tests {
 			}),
 			Message::ToolResult(ToolResultMessage {
 				tool_use_id: "tu_1".to_owned(),
-				content:     "file.txt".to_owned(),
+				content:     Arc::new("file.txt".to_owned()),
 				is_error:    false,
 			}),
 		];

@@ -229,7 +229,7 @@ async fn call_summarization_llm(
 ) -> Result<String> {
 	// Construct the rho_ai::Context (different type system from session messages).
 	let context = rho_ai::Context {
-		system_prompt: Some(SUMMARIZATION_SYSTEM.to_owned()),
+		system_prompt: Some(std::sync::Arc::new(SUMMARIZATION_SYSTEM.to_owned())),
 		messages:      vec![rho_ai::types::Message::User(rho_ai::types::UserMessage {
 			content: vec![rho_ai::types::UserContent::Text { text: user_content.to_owned() }],
 		})],
