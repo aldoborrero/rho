@@ -1,0 +1,11 @@
+{
+  "enabledPlugins": {
+    "superpowers-lab@superpowers-marketplace": true
+  },
+  "permissions": {
+    "allow": [
+      "Bash(grep:*)",
+      "Bash(git add:*)"
+    ]
+  }
+}
