@@ -32,6 +32,8 @@ base64 = "0.22"
 minijinja = { version = "2", features = ["builtins"] }
 toml = "0.8"
 tempfile = "3"
+similar = "2"
+unicode-normalization = "0.1"
 
 [dev-dependencies]
 filetime = "0.2"

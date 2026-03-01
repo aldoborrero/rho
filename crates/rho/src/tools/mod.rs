@@ -1,5 +1,6 @@
 pub mod bash;
 pub mod clipboard;
+pub mod edit;
 pub mod find;
 pub mod fuzzy_find;
 pub mod grep;
@@ -22,6 +23,7 @@ pub fn create_default_registry() -> ToolRegistry {
 	builder.register(Box::new(bash::BashTool));
 	builder.register(Box::new(read::ReadTool));
 	builder.register(Box::new(write::WriteTool));
+	builder.register(Box::new(edit::EditTool));
 	builder.register(Box::new(grep::GrepTool));
 	builder.register(Box::new(find::FindTool));
 	builder.register(Box::new(fuzzy_find::FuzzyFindTool));
