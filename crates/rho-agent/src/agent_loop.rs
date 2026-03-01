@@ -398,6 +398,15 @@ fn make_update_callback(
 	})
 }
 
+/// Drain messages from an optional fetcher. Returns an empty vec if the
+/// fetcher is `None` or returns no messages.
+fn drain_messages(fetcher: &Option<MessageFetcher>) -> Vec<Message> {
+	match fetcher {
+		Some(f) => f(),
+		None => Vec::new(),
+	}
+}
+
 /// Check if the loop should stop — either the abort token is cancelled or the
 /// event channel has been closed (consumer dropped).
 async fn check_should_stop(
@@ -474,5 +483,44 @@ mod tests {
 		assert_eq!(max_tokens_for(ThinkingLevel::Off, 8192), 8192);
 		assert_eq!(max_tokens_for(ThinkingLevel::Low, 8192), 16384);
 		assert_eq!(max_tokens_for(ThinkingLevel::High, 8192), 16384);
+	}
+
+	#[test]
+	fn drain_steering_returns_empty_when_no_fetcher() {
+		let result = drain_messages(&None);
+		assert!(result.is_empty());
+	}
+
+	#[test]
+	fn drain_steering_returns_messages_from_fetcher() {
+		use crate::types::UserMessage;
+		let fetcher: MessageFetcher = std::sync::Arc::new(|| {
+			vec![Message::User(UserMessage { content: "steer me".to_owned() })]
+		});
+		let result = drain_messages(&Some(fetcher));
+		assert_eq!(result.len(), 1);
+		match &result[0] {
+			Message::User(u) => assert_eq!(u.content, "steer me"),
+			_ => panic!("expected User message"),
+		}
+	}
+
+	#[test]
+	fn drain_steering_fetcher_called_once_returns_empty_second_time() {
+		use std::sync::atomic::{AtomicBool, Ordering};
+
+		use crate::types::UserMessage;
+		let called = std::sync::Arc::new(AtomicBool::new(false));
+		let called2 = std::sync::Arc::clone(&called);
+		let fetcher: MessageFetcher = std::sync::Arc::new(move || {
+			if !called2.swap(true, Ordering::SeqCst) {
+				vec![Message::User(UserMessage { content: "once".to_owned() })]
+			} else {
+				vec![]
+			}
+		});
+		let f = Some(fetcher);
+		assert_eq!(drain_messages(&f).len(), 1);
+		assert!(drain_messages(&f).is_empty());
 	}
 }
