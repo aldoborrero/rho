@@ -101,232 +101,272 @@ pub async fn run_agent_loop(
 	// A token that never fires — used when config.abort is None.
 	let cancel = config.abort.clone().unwrap_or_default();
 
+	// OUTER LOOP: follow-up messages (autonomous continuation).
+	// When `follow_up_fetcher` is `None`, this loop executes exactly once.
 	loop {
-		// Checkpoint: before starting a new turn.
-		if let Some(outcome) = check_should_stop(&cancel, &event_tx).await {
-			return outcome;
-		}
+		// Drain any steering messages queued while the agent was idle.
+		let mut pending_messages = drain_messages(config.steering_fetcher.as_ref());
 
-		turn += 1;
-		let _ = event_tx.send(AgentEvent::TurnStart { turn }).await;
+		// Carries the outcome from the inner loop to the follow-up check.
+		let inner_outcome: AgentOutcome;
 
-		// Build context by temporarily swapping the cached vecs in (zero
-		// allocation). `rho_ai::stream` serialises the context into the HTTP
-		// request body immediately; the returned `AssistantMessageStream`
-		// (an mpsc receiver) does not borrow it.
-		let mut context = rho_ai::types::Context {
-			system_prompt: Some(config.system_prompt.clone()),
-			messages:      std::mem::take(&mut ai_messages),
-			tools:         std::mem::take(&mut ai_tools),
-		};
-
-		let stream = rho_ai::stream(model, &context, &options);
-
-		// Reclaim the vecs — stream no longer borrows context.
-		ai_messages = std::mem::take(&mut context.messages);
-		ai_tools = std::mem::take(&mut context.tools);
-		drop(context);
-
-		let mut event_stream = stream.into_stream();
-
-		let mut stream_error = false;
-		let mut done_agent_msg: Option<crate::types::AssistantMessage> = None;
-		let mut done_ai_msg: Option<rho_ai::types::AssistantMessage> = None;
-
+		// INNER LOOP: steering + tool execution.
 		loop {
-			let event = tokio::select! {
-				event = event_stream.next() => match event {
-					Some(e) => e,
-					None => break,
-				},
-				() = cancel.cancelled() => {
-					return emit_done(AgentOutcome::Cancelled, &event_tx).await;
+			// Inject pending messages (steering or follow-up) into history.
+			if !pending_messages.is_empty() {
+				for msg in &pending_messages {
+					convert::push_ai_message(&mut ai_messages, msg);
+					messages.push(msg.clone());
 				}
-			};
-			match event {
-				rho_ai::StreamEvent::TextDelta { text, .. } => {
-					let _ = event_tx.send(AgentEvent::TextDelta(text)).await;
-				},
-				rho_ai::StreamEvent::ThinkingDelta { thinking, .. } => {
-					let _ = event_tx.send(AgentEvent::ThinkingDelta(thinking)).await;
-				},
-				rho_ai::StreamEvent::Done { message, .. } => {
-					done_agent_msg = Some(convert::from_ai_assistant(&message));
-					done_ai_msg = Some(message);
-				},
-				rho_ai::StreamEvent::Error { error, retryable, retry_after_ms } => {
-					let error_msg = error.to_string();
-					if retryable && config.retry.enabled && retry_attempt < config.retry.max_retries {
-						retry_attempt += 1;
-						let delay =
-							rho_ai::retry::calculate_backoff(&config.retry, retry_attempt, retry_after_ms);
-						let _ = event_tx
-							.send(AgentEvent::RetryScheduled {
-								attempt:  retry_attempt,
-								delay_ms: delay,
-								error:    error_msg,
-							})
-							.await;
-						// Race retry delay against cancellation.
-						tokio::select! {
-							() = tokio::time::sleep(std::time::Duration::from_millis(delay)) => {},
-							() = cancel.cancelled() => {
-								return emit_done(AgentOutcome::Cancelled, &event_tx).await;
-							}
-						}
-						stream_error = true;
-						break;
-					}
-					return emit_done(AgentOutcome::Failed { error: error_msg }, &event_tx).await;
-				},
-				// Other events (TextStart/End, ToolCallStart/Delta/End, ThinkingStart/End)
-				_ => {},
+				pending_messages.clear();
 			}
-		}
 
-		// If we broke out of stream due to retry, continue the outer loop
-		if stream_error {
-			continue;
-		}
-
-		// If we have no done message, the stream ended unexpectedly
-		let (Some(message), Some(ai_msg)) = (done_agent_msg, done_ai_msg) else {
-			return emit_done(
-				AgentOutcome::Failed { error: "Stream ended without a Done event".to_owned() },
-				&event_tx,
-			)
-			.await;
-		};
-
-		// Merge usage
-		if let Some(ref usage) = message.usage {
-			cumulative_usage = Some(match cumulative_usage {
-				Some(mut prev) => {
-					prev.input_tokens += usage.input_tokens;
-					prev.output_tokens += usage.output_tokens;
-					prev
-				},
-				None => usage.clone(),
-			});
-		}
-
-		// Reset retry on success
-		retry_attempt = 0;
-
-		// Extract data we need *before* moving the message into
-		// `messages.push()`, saving one deep clone per turn.
-		let stop_reason = message.stop_reason.clone();
-		let tool_uses: Vec<(usize, String, String, serde_json::Value)> = message
-			.content
-			.iter()
-			.enumerate()
-			.filter_map(|(idx, b)| match b {
-				ContentBlock::ToolUse { id, name, input } => {
-					Some((idx, id.clone(), name.clone(), input.clone()))
-				},
-				_ => None,
-			})
-			.collect();
-
-		// Notify message complete (clone for event channel).
-		let _ = event_tx
-			.send(AgentEvent::MessageComplete(message.clone()))
-			.await;
-
-		// Append assistant message to both histories. Push the original
-		// ai-format message directly — no redundant agent→ai reconversion.
-		// Move instead of clone — tool data is already extracted above.
-		messages.push(Message::Assistant(message));
-		ai_messages.push(rho_ai::types::Message::Assistant(ai_msg));
-
-		if !tool_uses.is_empty() {
-			// Checkpoint: before executing any tools.
+			// Checkpoint: before starting a new turn.
 			if let Some(outcome) = check_should_stop(&cancel, &event_tx).await {
 				return outcome;
 			}
 
-			// Emit all ToolCallStart events upfront.
-			for (_, id, name, _) in &tool_uses {
-				let _ = event_tx
-					.send(AgentEvent::ToolCallStart { id: id.clone(), name: name.clone() })
-					.await;
-			}
+			turn += 1;
+			let _ = event_tx.send(AgentEvent::TurnStart { turn }).await;
 
-			// Execute with barrier scheduling + steering poll points.
-			let mut outcome = execute_tool_calls(
-				&tool_uses,
-				tools,
-				&config.cwd,
-				&cancel,
-				&event_tx,
-				config.steering_fetcher.as_ref(),
-			)
-			.await;
+			// Build context by temporarily swapping the cached vecs in (zero
+			// allocation). `rho_ai::stream` serialises the context into the HTTP
+			// request body immediately; the returned `AssistantMessageStream`
+			// (an mpsc receiver) does not borrow it.
+			let mut context = rho_ai::types::Context {
+				system_prompt: Some(config.system_prompt.clone()),
+				messages:      std::mem::take(&mut ai_messages),
+				tools:         std::mem::take(&mut ai_tools),
+			};
 
-			if outcome.cancelled {
-				return emit_done(AgentOutcome::Cancelled, &event_tx).await;
-			}
+			let stream = rho_ai::stream(model, &context, &options);
 
-			// Emit results and append to histories in original order.
-			for (batch_idx, (_, id, ..)) in tool_uses.iter().enumerate() {
-				let (content, is_error) = match outcome.results[batch_idx].take() {
-					Some(r) => r,
-					None if outcome.steering.is_some() => skip_tool_result(),
-					None => (Arc::new("Tool execution aborted".to_owned()), true),
+			// Reclaim the vecs — stream no longer borrows context.
+			ai_messages = std::mem::take(&mut context.messages);
+			ai_tools = std::mem::take(&mut context.tools);
+			drop(context);
+
+			let mut event_stream = stream.into_stream();
+
+			let mut stream_error = false;
+			let mut done_agent_msg: Option<crate::types::AssistantMessage> = None;
+			let mut done_ai_msg: Option<rho_ai::types::AssistantMessage> = None;
+
+			loop {
+				let event = tokio::select! {
+					event = event_stream.next() => match event {
+						Some(e) => e,
+						None => break,
+					},
+					() = cancel.cancelled() => {
+						return emit_done(AgentOutcome::Cancelled, &event_tx).await;
+					}
 				};
-
-				let _ = event_tx
-					.send(AgentEvent::ToolCallResult { id: id.clone(), is_error })
-					.await;
-
-				let _ = event_tx
-					.send(AgentEvent::ToolResultComplete {
-						tool_use_id: id.clone(),
-						content: Arc::clone(&content),
-						is_error,
-					})
-					.await;
-
-				let tool_msg = Message::ToolResult(ToolResultMessage {
-					tool_use_id: id.clone(),
-					content,
-					is_error,
-				});
-				convert::push_ai_message(&mut ai_messages, &tool_msg);
-				messages.push(tool_msg);
+				match event {
+					rho_ai::StreamEvent::TextDelta { text, .. } => {
+						let _ = event_tx.send(AgentEvent::TextDelta(text)).await;
+					},
+					rho_ai::StreamEvent::ThinkingDelta { thinking, .. } => {
+						let _ = event_tx.send(AgentEvent::ThinkingDelta(thinking)).await;
+					},
+					rho_ai::StreamEvent::Done { message, .. } => {
+						done_agent_msg = Some(convert::from_ai_assistant(&message));
+						done_ai_msg = Some(message);
+					},
+					rho_ai::StreamEvent::Error { error, retryable, retry_after_ms } => {
+						let error_msg = error.to_string();
+						if retryable && config.retry.enabled && retry_attempt < config.retry.max_retries {
+							retry_attempt += 1;
+							let delay = rho_ai::retry::calculate_backoff(
+								&config.retry,
+								retry_attempt,
+								retry_after_ms,
+							);
+							let _ = event_tx
+								.send(AgentEvent::RetryScheduled {
+									attempt:  retry_attempt,
+									delay_ms: delay,
+									error:    error_msg,
+								})
+								.await;
+							// Race retry delay against cancellation.
+							tokio::select! {
+								() = tokio::time::sleep(std::time::Duration::from_millis(delay)) => {},
+								() = cancel.cancelled() => {
+									return emit_done(AgentOutcome::Cancelled, &event_tx).await;
+								}
+							}
+							stream_error = true;
+							break;
+						}
+						return emit_done(AgentOutcome::Failed { error: error_msg }, &event_tx).await;
+					},
+					// Other events (TextStart/End, ToolCallStart/Delta/End, ThinkingStart/End)
+					_ => {},
+				}
 			}
 
-			// If steering arrived, inject those messages and continue the inner loop.
-			if let Some(steering_msgs) = outcome.steering {
-				for msg in &steering_msgs {
-					convert::push_ai_message(&mut ai_messages, msg);
-					messages.push(msg.clone());
+			// If we broke out of stream due to retry, continue the inner loop
+			if stream_error {
+				continue;
+			}
+
+			// If we have no done message, the stream ended unexpectedly
+			let (Some(message), Some(ai_msg)) = (done_agent_msg, done_ai_msg) else {
+				return emit_done(
+					AgentOutcome::Failed { error: "Stream ended without a Done event".to_owned() },
+					&event_tx,
+				)
+				.await;
+			};
+
+			// Merge usage
+			if let Some(ref usage) = message.usage {
+				cumulative_usage = Some(match cumulative_usage {
+					Some(mut prev) => {
+						prev.input_tokens += usage.input_tokens;
+						prev.output_tokens += usage.output_tokens;
+						prev
+					},
+					None => usage.clone(),
+				});
+			}
+
+			// Reset retry on success
+			retry_attempt = 0;
+
+			// Extract data we need *before* moving the message into
+			// `messages.push()`, saving one deep clone per turn.
+			let stop_reason = message.stop_reason.clone();
+			let tool_uses: Vec<(usize, String, String, serde_json::Value)> = message
+				.content
+				.iter()
+				.enumerate()
+				.filter_map(|(idx, b)| match b {
+					ContentBlock::ToolUse { id, name, input } => {
+						Some((idx, id.clone(), name.clone(), input.clone()))
+					},
+					_ => None,
+				})
+				.collect();
+
+			// Notify message complete (clone for event channel).
+			let _ = event_tx
+				.send(AgentEvent::MessageComplete(message.clone()))
+				.await;
+
+			// Append assistant message to both histories. Push the original
+			// ai-format message directly — no redundant agent->ai reconversion.
+			// Move instead of clone — tool data is already extracted above.
+			messages.push(Message::Assistant(message));
+			ai_messages.push(rho_ai::types::Message::Assistant(ai_msg));
+
+			if !tool_uses.is_empty() {
+				// Checkpoint: before executing any tools.
+				if let Some(outcome) = check_should_stop(&cancel, &event_tx).await {
+					return outcome;
 				}
-				// Checkpoint before next turn.
-				if let Some(o) = check_should_stop(&cancel, &event_tx).await {
-					return o;
+
+				// Emit all ToolCallStart events upfront.
+				for (_, id, name, _) in &tool_uses {
+					let _ = event_tx
+						.send(AgentEvent::ToolCallStart { id: id.clone(), name: name.clone() })
+						.await;
+				}
+
+				// Execute with barrier scheduling + steering poll points.
+				let mut outcome = execute_tool_calls(
+					&tool_uses,
+					tools,
+					&config.cwd,
+					&cancel,
+					&event_tx,
+					config.steering_fetcher.as_ref(),
+				)
+				.await;
+
+				if outcome.cancelled {
+					return emit_done(AgentOutcome::Cancelled, &event_tx).await;
+				}
+
+				// Emit results and append to histories in original order.
+				for (batch_idx, (_, id, ..)) in tool_uses.iter().enumerate() {
+					let (content, is_error) = match outcome.results[batch_idx].take() {
+						Some(r) => r,
+						None if outcome.steering.is_some() => skip_tool_result(),
+						None => (Arc::new("Tool execution aborted".to_owned()), true),
+					};
+
+					let _ = event_tx
+						.send(AgentEvent::ToolCallResult { id: id.clone(), is_error })
+						.await;
+
+					let _ = event_tx
+						.send(AgentEvent::ToolResultComplete {
+							tool_use_id: id.clone(),
+							content: Arc::clone(&content),
+							is_error,
+						})
+						.await;
+
+					let tool_msg = Message::ToolResult(ToolResultMessage {
+						tool_use_id: id.clone(),
+						content,
+						is_error,
+					});
+					convert::push_ai_message(&mut ai_messages, &tool_msg);
+					messages.push(tool_msg);
+				}
+
+				// If steering arrived, inject those messages and continue the inner loop.
+				if let Some(steering_msgs) = outcome.steering {
+					for msg in &steering_msgs {
+						convert::push_ai_message(&mut ai_messages, msg);
+						messages.push(msg.clone());
+					}
+					// Checkpoint before next turn.
+					if let Some(o) = check_should_stop(&cancel, &event_tx).await {
+						return o;
+					}
+					continue;
+				}
+
+				// Checkpoint: before sending tool results back to LLM.
+				if let Some(outcome) = check_should_stop(&cancel, &event_tx).await {
+					return outcome;
 				}
 				continue;
 			}
 
-			// Checkpoint: before sending tool results back to LLM.
-			if let Some(outcome) = check_should_stop(&cancel, &event_tx).await {
-				return outcome;
-			}
-			continue;
+			// No tool calls — compute outcome and break inner loop.
+			// Clone usage so cumulative_usage remains available if the
+			// outer loop continues with follow-up messages.
+			inner_outcome = match stop_reason.as_ref() {
+				Some(crate::types::StopReason::MaxTokens) => {
+					AgentOutcome::MaxTokens { usage: cumulative_usage.clone() }
+				},
+				_ => {
+					// EndTurn, StopSequence, or None — agent is done (for now).
+					AgentOutcome::Stop { usage: cumulative_usage.clone() }
+				},
+			};
+			break; // break inner loop — check follow-up in outer loop
 		}
 
-		// No tool calls — check terminal conditions
-		let outcome = match stop_reason.as_ref() {
-			Some(crate::types::StopReason::MaxTokens) => {
-				AgentOutcome::MaxTokens { usage: cumulative_usage }
-			},
-			_ => {
-				// EndTurn, StopSequence, or None — agent is done
-				AgentOutcome::Stop { usage: cumulative_usage }
-			},
-		};
-		return emit_done(outcome, &event_tx).await;
+		// Inner loop done. Check for follow-up messages before returning.
+		let follow_up = drain_messages(config.follow_up_fetcher.as_ref());
+		if follow_up.is_empty() {
+			// No follow-up — agent is truly done.
+			return emit_done(inner_outcome, &event_tx).await;
+		}
+
+		// Follow-up messages present — inject into history and continue
+		// the outer loop to start a new inner-loop iteration.
+		for msg in &follow_up {
+			convert::push_ai_message(&mut ai_messages, msg);
+			messages.push(msg.clone());
+		}
+		// Continue outer loop — will drain steering at top and enter inner again.
 	}
 }
 
