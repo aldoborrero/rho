@@ -60,7 +60,7 @@ impl Tool for WorkmuxTool {
 		})
 	}
 
-	async fn execute(&self, input: Value, _cwd: &Path, _cancel: &CancellationToken, _on_update: Option<&OnToolUpdate>) -> anyhow::Result<ToolOutput> {
+	async fn execute(&self, input: &Value, _cwd: &Path, _cancel: &CancellationToken, _on_update: Option<&OnToolUpdate>) -> anyhow::Result<ToolOutput> {
 		let action = input
 			.get("action")
 			.and_then(Value::as_str)
@@ -251,7 +251,7 @@ mod tests {
 		let tool = WorkmuxTool;
 		let ct = CancellationToken::new();
 		let result = tool
-			.execute(json!({"action": "detect"}), Path::new("/"), &ct, None)
+			.execute(&json!({"action": "detect"}), Path::new("/"), &ct, None)
 			.await
 			.unwrap();
 		// Detection should succeed even without a running multiplexer
@@ -264,7 +264,7 @@ mod tests {
 		let tool = WorkmuxTool;
 		let ct = CancellationToken::new();
 		let result = tool
-			.execute(json!({"action": "invalid"}), Path::new("/"), &ct, None)
+			.execute(&json!({"action": "invalid"}), Path::new("/"), &ct, None)
 			.await
 			.unwrap();
 		assert!(result.is_error);
@@ -279,7 +279,7 @@ mod tests {
 	async fn test_workmux_missing_action() {
 		let tool = WorkmuxTool;
 		let ct = CancellationToken::new();
-		let result = tool.execute(json!({}), Path::new("/"), &ct, None).await;
+		let result = tool.execute(&json!({}), Path::new("/"), &ct, None).await;
 		assert!(result.is_err(), "Expected error for missing action parameter");
 	}
 }

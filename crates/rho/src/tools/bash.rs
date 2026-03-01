@@ -85,7 +85,7 @@ impl Tool for BashTool {
 
 	async fn execute(
 		&self,
-		input: Value,
+		input: &Value,
 		cwd: &Path,
 		cancel: &CancellationToken,
 		on_update: Option<&OnToolUpdate>,
@@ -186,7 +186,7 @@ mod tests {
 		let tool = BashTool;
 		let ct = CancellationToken::new();
 		let result = tool
-			.execute(json!({"command": "echo hello"}), Path::new("."), &ct, None)
+			.execute(&json!({"command": "echo hello"}), Path::new("."), &ct, None)
 			.await
 			.unwrap();
 		assert_eq!(result.content.trim(), "hello");
@@ -198,7 +198,7 @@ mod tests {
 		let tool = BashTool;
 		let ct = CancellationToken::new();
 		let result = tool
-			.execute(json!({"command": "false"}), Path::new("."), &ct, None)
+			.execute(&json!({"command": "false"}), Path::new("."), &ct, None)
 			.await
 			.unwrap();
 		assert!(result.is_error);
@@ -208,7 +208,7 @@ mod tests {
 	async fn test_bash_missing_command() {
 		let tool = BashTool;
 		let ct = CancellationToken::new();
-		let result = tool.execute(json!({}), Path::new("."), &ct, None).await;
+		let result = tool.execute(&json!({}), Path::new("."), &ct, None).await;
 		assert!(result.is_err());
 	}
 
@@ -217,7 +217,7 @@ mod tests {
 		let tool = BashTool;
 		let ct = CancellationToken::new();
 		let result = tool
-			.execute(json!({"command": "pwd"}), Path::new("/tmp"), &ct, None)
+			.execute(&json!({"command": "pwd"}), Path::new("/tmp"), &ct, None)
 			.await
 			.unwrap();
 		assert_eq!(result.content.trim(), "/tmp");
@@ -288,7 +288,7 @@ mod tests {
 		let ct = CancellationToken::new();
 		// Generate output larger than MAX_OUTPUT_BYTES (100KB).
 		let result = tool
-			.execute(json!({"command": "head -c 204800 /dev/urandom | base64"}), Path::new("."), &ct, None)
+			.execute(&json!({"command": "head -c 204800 /dev/urandom | base64"}), Path::new("."), &ct, None)
 			.await
 			.unwrap();
 		// Output should contain the truncation notice.

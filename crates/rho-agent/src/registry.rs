@@ -80,7 +80,7 @@ impl ToolRegistry {
 	pub async fn execute(
 		&self,
 		name: &str,
-		input: serde_json::Value,
+		input: &serde_json::Value,
 		cwd: &Path,
 		cancel: &CancellationToken,
 		on_update: Option<&OnToolUpdate>,

@@ -47,7 +47,7 @@ impl Tool for ProcessTool {
 		Concurrency::Exclusive
 	}
 
-	async fn execute(&self, input: Value, _cwd: &Path, _cancel: &CancellationToken, _on_update: Option<&OnToolUpdate>) -> anyhow::Result<ToolOutput> {
+	async fn execute(&self, input: &Value, _cwd: &Path, _cancel: &CancellationToken, _on_update: Option<&OnToolUpdate>) -> anyhow::Result<ToolOutput> {
 		let action = input
 			.get("action")
 			.and_then(Value::as_str)
@@ -112,7 +112,7 @@ mod tests {
 		let ct = CancellationToken::new();
 		let pid = std::process::id();
 		let result = tool
-			.execute(json!({"action": "list_descendants", "pid": pid}), Path::new("/"), &ct, None)
+			.execute(&json!({"action": "list_descendants", "pid": pid}), Path::new("/"), &ct, None)
 			.await
 			.unwrap();
 		// Current process may or may not have children; just verify no error
@@ -124,7 +124,7 @@ mod tests {
 		let tool = ProcessTool;
 		let ct = CancellationToken::new();
 		let result = tool
-			.execute(json!({"action": "invalid", "pid": 1}), Path::new("/"), &ct, None)
+			.execute(&json!({"action": "invalid", "pid": 1}), Path::new("/"), &ct, None)
 			.await
 			.unwrap();
 		assert!(result.is_error);
@@ -139,7 +139,7 @@ mod tests {
 	async fn test_process_missing_action() {
 		let tool = ProcessTool;
 		let ct = CancellationToken::new();
-		let result = tool.execute(json!({"pid": 1}), Path::new("/"), &ct, None).await;
+		let result = tool.execute(&json!({"pid": 1}), Path::new("/"), &ct, None).await;
 		assert!(result.is_err(), "Expected error for missing action parameter");
 	}
 }

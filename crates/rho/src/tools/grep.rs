@@ -63,7 +63,7 @@ impl Tool for GrepTool {
 		})
 	}
 
-	async fn execute(&self, input: Value, cwd: &Path, cancel: &CancellationToken, _on_update: Option<&OnToolUpdate>) -> anyhow::Result<ToolOutput> {
+	async fn execute(&self, input: &Value, cwd: &Path, cancel: &CancellationToken, _on_update: Option<&OnToolUpdate>) -> anyhow::Result<ToolOutput> {
 		let pattern = input
 			.get("pattern")
 			.and_then(Value::as_str)
@@ -186,7 +186,7 @@ mod tests {
 		let tool = GrepTool;
 		let ct = CancellationToken::new();
 		let result = tool
-			.execute(json!({"pattern": "hello", "path": dir.path().to_str().unwrap()}), Path::new("/"), &ct, None)
+			.execute(&json!({"pattern": "hello", "path": dir.path().to_str().unwrap()}), Path::new("/"), &ct, None)
 			.await
 			.unwrap();
 		assert!(!result.is_error, "Unexpected error: {}", result.content);
@@ -212,7 +212,7 @@ mod tests {
 		let ct = CancellationToken::new();
 		let result = tool
 			.execute(
-				json!({"pattern": "zzzznotfound", "path": dir.path().to_str().unwrap()}),
+				&json!({"pattern": "zzzznotfound", "path": dir.path().to_str().unwrap()}),
 				Path::new("/"),
 				&ct,
 				None,
@@ -232,7 +232,7 @@ mod tests {
 		let ct = CancellationToken::new();
 		let result = tool
 			.execute(
-				json!({"pattern": "hello", "path": dir.path().to_str().unwrap(), "i": true}),
+				&json!({"pattern": "hello", "path": dir.path().to_str().unwrap(), "i": true}),
 				Path::new("/"),
 				&ct,
 				None,
@@ -257,7 +257,7 @@ mod tests {
 		let ct = CancellationToken::new();
 		let result = tool
 			.execute(
-				json!({"pattern": "fn main", "path": dir.path().to_str().unwrap(), "glob": "*.rs"}),
+				&json!({"pattern": "fn main", "path": dir.path().to_str().unwrap(), "glob": "*.rs"}),
 				Path::new("/"),
 				&ct,
 				None,

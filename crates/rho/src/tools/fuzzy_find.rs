@@ -43,7 +43,7 @@ impl Tool for FuzzyFindTool {
 		})
 	}
 
-	async fn execute(&self, input: Value, cwd: &Path, cancel: &CancellationToken, _on_update: Option<&OnToolUpdate>) -> anyhow::Result<ToolOutput> {
+	async fn execute(&self, input: &Value, cwd: &Path, cancel: &CancellationToken, _on_update: Option<&OnToolUpdate>) -> anyhow::Result<ToolOutput> {
 		let query = input
 			.get("query")
 			.and_then(Value::as_str)
@@ -120,7 +120,7 @@ mod tests {
 		let tool = FuzzyFindTool;
 		let ct = CancellationToken::new();
 		let result = tool
-			.execute(json!({"query": "ctrl", "path": dir.path().to_str().unwrap()}), Path::new("/"), &ct, None)
+			.execute(&json!({"query": "ctrl", "path": dir.path().to_str().unwrap()}), Path::new("/"), &ct, None)
 			.await
 			.unwrap();
 		assert!(!result.is_error, "Unexpected error: {}", result.content);
@@ -140,7 +140,7 @@ mod tests {
 		let ct = CancellationToken::new();
 		let result = tool
 			.execute(
-				json!({"query": "zzznotfound", "path": dir.path().to_str().unwrap()}),
+				&json!({"query": "zzznotfound", "path": dir.path().to_str().unwrap()}),
 				Path::new("/"),
 				&ct,
 				None,

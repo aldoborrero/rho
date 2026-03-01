@@ -52,7 +52,7 @@ impl Tool for ImageTool {
 		Concurrency::Exclusive
 	}
 
-	async fn execute(&self, input: Value, cwd: &Path, _cancel: &CancellationToken, _on_update: Option<&OnToolUpdate>) -> anyhow::Result<ToolOutput> {
+	async fn execute(&self, input: &Value, cwd: &Path, _cancel: &CancellationToken, _on_update: Option<&OnToolUpdate>) -> anyhow::Result<ToolOutput> {
 		let action = input
 			.get("action")
 			.and_then(Value::as_str)
@@ -182,7 +182,7 @@ mod tests {
 		let tool = ImageTool;
 		let ct = CancellationToken::new();
 		let result = tool
-			.execute(json!({"action": "info", "path": img_path.to_str().unwrap()}), Path::new("/"), &ct, None)
+			.execute(&json!({"action": "info", "path": img_path.to_str().unwrap()}), Path::new("/"), &ct, None)
 			.await
 			.unwrap();
 		assert!(!result.is_error, "Unexpected error: {}", result.content);
@@ -195,7 +195,7 @@ mod tests {
 		let tool = ImageTool;
 		let ct = CancellationToken::new();
 		let result = tool
-			.execute(json!({"action": "invalid", "path": "/tmp/test.png"}), Path::new("/"), &ct, None)
+			.execute(&json!({"action": "invalid", "path": "/tmp/test.png"}), Path::new("/"), &ct, None)
 			.await
 			.unwrap();
 		assert!(result.is_error);
@@ -211,7 +211,7 @@ mod tests {
 		let tool = ImageTool;
 		let ct = CancellationToken::new();
 		let result = tool
-			.execute(json!({"action": "info"}), Path::new("/"), &ct, None)
+			.execute(&json!({"action": "info"}), Path::new("/"), &ct, None)
 			.await;
 		assert!(result.is_err(), "Expected error for missing path parameter");
 	}

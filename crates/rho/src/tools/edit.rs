@@ -336,7 +336,7 @@ impl Tool for EditTool {
 
 	async fn execute(
 		&self,
-		input: Value,
+		input: &Value,
 		cwd: &Path,
 		_cancel: &CancellationToken,
 		_on_update: Option<&OnToolUpdate>,
@@ -462,7 +462,7 @@ mod tests {
 		let tool = EditTool;
 		let ct = CancellationToken::new();
 		tool.execute(
-			json!({
+			&json!({
 				"file_path": file_path,
 				"old_string": old_string,
 				"new_string": new_string,

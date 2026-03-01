@@ -52,7 +52,7 @@ pub trait Tool: Send + Sync {
 	/// to the UI during execution (e.g. for long-running bash commands).
 	async fn execute(
 		&self,
-		input: serde_json::Value,
+		input: &serde_json::Value,
 		cwd: &Path,
 		cancel: &CancellationToken,
 		on_update: Option<&OnToolUpdate>,

@@ -47,7 +47,7 @@ impl Tool for FindTool {
 		})
 	}
 
-	async fn execute(&self, input: Value, cwd: &Path, cancel: &CancellationToken, _on_update: Option<&OnToolUpdate>) -> anyhow::Result<ToolOutput> {
+	async fn execute(&self, input: &Value, cwd: &Path, cancel: &CancellationToken, _on_update: Option<&OnToolUpdate>) -> anyhow::Result<ToolOutput> {
 		let pattern = input
 			.get("pattern")
 			.and_then(Value::as_str)
@@ -149,7 +149,7 @@ mod tests {
 		let tool = FindTool;
 		let ct = CancellationToken::new();
 		let result = tool
-			.execute(json!({"pattern": "*.rs", "path": dir.path().to_str().unwrap()}), Path::new("/"), &ct, None)
+			.execute(&json!({"pattern": "*.rs", "path": dir.path().to_str().unwrap()}), Path::new("/"), &ct, None)
 			.await
 			.unwrap();
 		assert!(!result.is_error, "Unexpected error: {}", result.content);
@@ -171,7 +171,7 @@ mod tests {
 		let ct = CancellationToken::new();
 		let result = tool
 			.execute(
-				json!({"pattern": "*.nonexistent", "path": dir.path().to_str().unwrap()}),
+				&json!({"pattern": "*.nonexistent", "path": dir.path().to_str().unwrap()}),
 				Path::new("/"),
 				&ct,
 				None,
