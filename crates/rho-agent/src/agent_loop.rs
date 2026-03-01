@@ -1,11 +1,9 @@
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
+use futures_util::future::join_all;
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 use tokio_util::sync::CancellationToken;
-
-use futures_util::future::join_all;
 
 use crate::{
 	convert,
@@ -27,25 +25,36 @@ pub enum ThinkingLevel {
 
 /// Configuration for a single agent loop run.
 pub struct AgentConfig {
-	pub system_prompt: Arc<String>,
-	pub max_tokens:    u32,
-	pub thinking:      ThinkingLevel,
-	pub retry:         rho_ai::RetryConfig,
-	pub cwd:           PathBuf,
+	pub system_prompt:     Arc<String>,
+	pub max_tokens:        u32,
+	pub thinking:          ThinkingLevel,
+	pub retry:             rho_ai::RetryConfig,
+	pub cwd:               PathBuf,
 	/// API key override (passed through to `StreamOptions`).
-	pub api_key:       Option<String>,
+	pub api_key:           Option<String>,
 	/// Temperature override. `None` or negative = provider default.
-	pub temperature:   Option<f32>,
+	pub temperature:       Option<f32>,
 	/// Cancellation token — when cancelled, the loop exits immediately
 	/// with `AgentOutcome::Cancelled`. Cancellation is raced against LLM
 	/// streaming, tool execution, and retry delays via `tokio::select!`.
-	pub abort:         Option<CancellationToken>,
+	pub abort:             Option<CancellationToken>,
 	/// Polled at tool execution boundaries. Returns steering messages that
 	/// interrupt the current tool batch — unexecuted tools are skipped.
 	pub steering_fetcher:  Option<MessageFetcher>,
 	/// Polled when the inner loop has no more tool calls or steering. Returns
 	/// follow-up messages that start a new outer-loop iteration.
 	pub follow_up_fetcher: Option<MessageFetcher>,
+}
+
+/// Outcome of executing a batch of tool calls with barrier scheduling.
+struct ToolExecutionOutcome {
+	/// Tool results indexed by position. `None` entries were skipped/cancelled.
+	results:   Vec<Option<(Arc<String>, bool)>>,
+	/// Steering messages that arrived during execution, causing remaining
+	/// tools to be skipped. `None` if no steering occurred.
+	steering:  Option<Vec<Message>>,
+	/// Whether cancellation fired during execution.
+	cancelled: bool,
 }
 
 /// Run the autonomous agent loop.
@@ -80,12 +89,12 @@ pub async fn run_agent_loop(
 	// Build StreamOptions once — all fields are invariant across turns.
 	let temperature = config.temperature.filter(|&t| t >= 0.0);
 	let options = rho_ai::types::StreamOptions {
-		api_key:     config.api_key.clone(),
-		max_tokens:  Some(max_tokens_for(config.thinking, config.max_tokens)),
-		reasoning:   thinking_to_reasoning(config.thinking),
+		api_key: config.api_key.clone(),
+		max_tokens: Some(max_tokens_for(config.thinking, config.max_tokens)),
+		reasoning: thinking_to_reasoning(config.thinking),
 		temperature,
-		retry:       config.retry.clone(),
-		abort:       config.abort.clone(),
+		retry: config.retry.clone(),
+		abort: config.abort.clone(),
 		..Default::default()
 	};
 
@@ -239,81 +248,41 @@ pub async fn run_agent_loop(
 			// Emit all ToolCallStart events upfront.
 			for (_, id, name, _) in &tool_uses {
 				let _ = event_tx
-					.send(AgentEvent::ToolCallStart {
-						id:   id.clone(),
-						name: name.clone(),
-					})
+					.send(AgentEvent::ToolCallStart { id: id.clone(), name: name.clone() })
 					.await;
 			}
 
-			// Execute with barrier scheduling: shared tools run in
-			// parallel, exclusive tools flush all pending work first,
-			// then run alone. Each execution is raced against the
-			// cancellation token for immediate abort.
-			let mut results: Vec<Option<(Arc<String>, bool)>> = vec![None; tool_uses.len()];
-			let mut pending_shared: Vec<(usize, &str, &str, &serde_json::Value)> = Vec::new();
-			let mut cancelled = false;
+			// Execute with barrier scheduling + steering poll points.
+			let mut outcome = execute_tool_calls(
+				&tool_uses,
+				tools,
+				&config.cwd,
+				&cancel,
+				&event_tx,
+				config.steering_fetcher.as_ref(),
+			)
+			.await;
 
-			for (batch_idx, (_, id, name, input)) in tool_uses.iter().enumerate() {
-				if tools.concurrency(name) == Concurrency::Shared {
-					pending_shared.push((batch_idx, id.as_str(), name.as_str(), input));
-				} else {
-					// Barrier: flush all pending shared tools first.
-					if !pending_shared.is_empty() {
-						let batch = std::mem::take(&mut pending_shared);
-						if flush_shared_batch(&batch, tools, &config.cwd, &cancel, &event_tx, &mut results)
-							.await
-						{
-							cancelled = true;
-							break;
-						}
-					}
-					// Execute exclusive tool alone, raced against cancellation.
-					let cb = make_update_callback(&event_tx, id);
-					let result = tokio::select! {
-						result = tools.execute(name, input, &config.cwd, &cancel, Some(&cb)) => {
-							wrap_tool_result(result)
-						}
-						() = cancel.cancelled() => {
-							cancelled = true;
-							break;
-						}
-					};
-					results[batch_idx] = Some(result);
-				}
-			}
-
-			// Flush remaining shared tools (unless already cancelled).
-			if !cancelled && !pending_shared.is_empty() {
-				let batch = std::mem::take(&mut pending_shared);
-				if flush_shared_batch(&batch, tools, &config.cwd, &cancel, &event_tx, &mut results)
-					.await
-				{
-					cancelled = true;
-				}
-			}
-
-			if cancelled {
+			if outcome.cancelled {
 				return emit_done(AgentOutcome::Cancelled, &event_tx).await;
 			}
 
 			// Emit results and append to histories in original order.
-			for (batch_idx, (_, id, _, _)) in tool_uses.iter().enumerate() {
-				let (content, is_error) = results[batch_idx]
-					.take()
-					.expect("all tool results should be populated");
+			for (batch_idx, (_, id, ..)) in tool_uses.iter().enumerate() {
+				let (content, is_error) = match outcome.results[batch_idx].take() {
+					Some(r) => r,
+					None if outcome.steering.is_some() => skip_tool_result(),
+					None => (Arc::new("Tool execution aborted".to_owned()), true),
+				};
 
 				let _ = event_tx
-					.send(AgentEvent::ToolCallResult {
-						id: id.clone(),
-						is_error,
-					})
+					.send(AgentEvent::ToolCallResult { id: id.clone(), is_error })
 					.await;
 
 				let _ = event_tx
 					.send(AgentEvent::ToolResultComplete {
 						tool_use_id: id.clone(),
-						content:     Arc::clone(&content),
+						content: Arc::clone(&content),
 						is_error,
 					})
 					.await;
@@ -325,6 +294,19 @@ pub async fn run_agent_loop(
 				});
 				convert::push_ai_message(&mut ai_messages, &tool_msg);
 				messages.push(tool_msg);
+			}
+
+			// If steering arrived, inject those messages and continue the inner loop.
+			if let Some(steering_msgs) = outcome.steering {
+				for msg in &steering_msgs {
+					convert::push_ai_message(&mut ai_messages, msg);
+					messages.push(msg.clone());
+				}
+				// Checkpoint before next turn.
+				if let Some(o) = check_should_stop(&cancel, &event_tx).await {
+					return o;
+				}
+				continue;
 			}
 
 			// Checkpoint: before sending tool results back to LLM.
@@ -348,6 +330,91 @@ pub async fn run_agent_loop(
 	}
 }
 
+/// Execute a batch of tool calls using barrier scheduling with steering poll
+/// points. Shared tools are batched for parallel execution; exclusive tools
+/// flush pending shared work first and run alone. At each scheduling boundary,
+/// steering messages are polled — if any arrive, remaining tools are skipped.
+#[allow(clippy::future_not_send, reason = "ToolRegistry contains non-Send tools")]
+async fn execute_tool_calls(
+	tool_uses: &[(usize, String, String, serde_json::Value)],
+	tools: &ToolRegistry,
+	cwd: &std::path::Path,
+	cancel: &CancellationToken,
+	event_tx: &mpsc::Sender<AgentEvent>,
+	steering_fetcher: Option<&MessageFetcher>,
+) -> ToolExecutionOutcome {
+	let mut results: Vec<Option<(Arc<String>, bool)>> = vec![None; tool_uses.len()];
+	let mut pending_shared: Vec<(usize, &str, &str, &serde_json::Value)> = Vec::new();
+	let mut cancelled = false;
+	let mut steering: Option<Vec<Message>> = None;
+
+	for (batch_idx, (_, id, name, input)) in tool_uses.iter().enumerate() {
+		if tools.concurrency(name) == Concurrency::Shared {
+			pending_shared.push((batch_idx, id.as_str(), name.as_str(), input));
+		} else {
+			// POLL 1: before flushing shared batch.
+			let msgs = drain_messages(steering_fetcher);
+			if !msgs.is_empty() {
+				steering = Some(msgs);
+				break;
+			}
+
+			// Barrier: flush all pending shared tools first.
+			if !pending_shared.is_empty() {
+				let batch = std::mem::take(&mut pending_shared);
+				if flush_shared_batch(&batch, tools, cwd, cancel, event_tx, &mut results).await {
+					cancelled = true;
+					break;
+				}
+			}
+
+			// POLL 2: before expensive exclusive tool.
+			let msgs = drain_messages(steering_fetcher);
+			if !msgs.is_empty() {
+				steering = Some(msgs);
+				break;
+			}
+
+			// Execute exclusive tool alone, raced against cancellation.
+			let cb = make_update_callback(event_tx, id);
+			let result = tokio::select! {
+				result = tools.execute(name, input, cwd, cancel, Some(&cb)) => {
+					wrap_tool_result(result)
+				}
+				() = cancel.cancelled() => {
+					cancelled = true;
+					break;
+				}
+			};
+			results[batch_idx] = Some(result);
+		}
+	}
+
+	// Flush remaining shared tools (unless cancelled or steered).
+	if !cancelled && steering.is_none() && !pending_shared.is_empty() {
+		// POLL 3: before final shared flush.
+		let msgs = drain_messages(steering_fetcher);
+		if msgs.is_empty() {
+			let batch = std::mem::take(&mut pending_shared);
+			if flush_shared_batch(&batch, tools, cwd, cancel, event_tx, &mut results).await {
+				cancelled = true;
+			}
+		} else {
+			steering = Some(msgs);
+		}
+	}
+
+	// POLL 4: after all execution (catches messages that arrived during last tool).
+	if !cancelled && steering.is_none() {
+		let msgs = drain_messages(steering_fetcher);
+		if !msgs.is_empty() {
+			steering = Some(msgs);
+		}
+	}
+
+	ToolExecutionOutcome { results, steering, cancelled }
+}
+
 /// Flush a batch of pending shared tools: create per-tool update callbacks,
 /// run all in parallel via `join_all`, and store the results. Returns `true`
 /// if cancellation fired before completion.
@@ -362,11 +429,12 @@ async fn flush_shared_batch(
 ) -> bool {
 	let callbacks: Vec<OnToolUpdate> = batch
 		.iter()
-		.map(|&(_, tid, _, _)| make_update_callback(event_tx, tid))
+		.map(|&(_, tid, ..)| make_update_callback(event_tx, tid))
 		.collect();
-	let futures = batch.iter().zip(callbacks.iter()).map(|(&(_, _, n, inp), cb)| {
-		tools.execute(n, inp, cwd, cancel, Some(cb))
-	});
+	let futures = batch
+		.iter()
+		.zip(callbacks.iter())
+		.map(|(&(_, _, n, inp), cb)| tools.execute(n, inp, cwd, cancel, Some(cb)));
 	tokio::select! {
 		batch_results = join_all(futures) => {
 			for (&(bi, ..), result) in batch.iter().zip(batch_results) {
@@ -384,10 +452,7 @@ async fn flush_shared_batch(
 /// Uses `try_send` (non-blocking) so the synchronous callback never blocks
 /// a tokio worker thread. If the channel is full the update is silently
 /// dropped (acceptable for UI streaming).
-fn make_update_callback(
-	event_tx: &mpsc::Sender<AgentEvent>,
-	tool_use_id: &str,
-) -> OnToolUpdate {
+fn make_update_callback(event_tx: &mpsc::Sender<AgentEvent>, tool_use_id: &str) -> OnToolUpdate {
 	let tx = event_tx.clone();
 	let id = tool_use_id.to_owned();
 	std::sync::Arc::new(move |content: &str| {
@@ -400,7 +465,7 @@ fn make_update_callback(
 
 /// Drain messages from an optional fetcher. Returns an empty vec if the
 /// fetcher is `None` or returns no messages.
-fn drain_messages(fetcher: &Option<MessageFetcher>) -> Vec<Message> {
+fn drain_messages(fetcher: Option<&MessageFetcher>) -> Vec<Message> {
 	match fetcher {
 		Some(f) => f(),
 		None => Vec::new(),
@@ -419,9 +484,7 @@ async fn check_should_stop(
 		return Some(outcome);
 	}
 	if event_tx.is_closed() {
-		return Some(AgentOutcome::Failed {
-			error: "Event channel closed".to_owned(),
-		});
+		return Some(AgentOutcome::Failed { error: "Event channel closed".to_owned() });
 	}
 	None
 }
@@ -435,8 +498,8 @@ fn wrap_tool_result(result: anyhow::Result<crate::tools::ToolOutput>) -> (Arc<St
 }
 
 /// Produce a placeholder result for a tool that was skipped due to a
-/// steering message arriving mid-batch. Preserves the tool_use → tool_result
-/// pairing invariant the LLM expects.
+/// steering message arriving mid-batch. Preserves the `tool_use` →
+/// `tool_result` pairing invariant the LLM expects.
 fn skip_tool_result() -> (Arc<String>, bool) {
 	(Arc::new("Skipped due to queued user message.".to_owned()), true)
 }
@@ -494,7 +557,7 @@ mod tests {
 
 	#[test]
 	fn drain_steering_returns_empty_when_no_fetcher() {
-		let result = drain_messages(&None);
+		let result = drain_messages(None);
 		assert!(result.is_empty());
 	}
 
@@ -504,7 +567,7 @@ mod tests {
 		let fetcher: MessageFetcher = std::sync::Arc::new(|| {
 			vec![Message::User(UserMessage { content: "steer me".to_owned() })]
 		});
-		let result = drain_messages(&Some(fetcher));
+		let result = drain_messages(Some(&fetcher));
 		assert_eq!(result.len(), 1);
 		match &result[0] {
 			Message::User(u) => assert_eq!(u.content, "steer me"),
@@ -534,7 +597,7 @@ mod tests {
 			}
 		});
 		let f = Some(fetcher);
-		assert_eq!(drain_messages(&f).len(), 1);
-		assert!(drain_messages(&f).is_empty());
+		assert_eq!(drain_messages(f.as_ref()).len(), 1);
+		assert!(drain_messages(f.as_ref()).is_empty());
 	}
 }
