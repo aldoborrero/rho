@@ -1,7 +1,8 @@
 # Reference Implementation Review: oh-my-pi & pi_agent_rust
 
 **Date:** 2026-02-28
-**Status:** Research complete, prioritized backlog ready
+**Updated:** 2026-03-01
+**Status:** Research complete, prioritized backlog ready (P0 tier complete)
 **Scope:** Comprehensive comparison of rho's agent loop against both reference implementations to identify portable patterns and feature gaps.
 
 ## Sources
@@ -67,20 +68,20 @@ pi_agent_rust mirrors the dual-loop with Rust-native concurrency:
 
 Public entry points: `run()` at line 574, `run_with_abort()` at line 583, `run_with_content_with_abort()` at line 611.
 
-### 1.3 rho: Single Sequential Loop
+### 1.3 rho: Single Sequential Loop with Abort Racing
 
-rho has a single `run_agent_loop` function with no steering or follow-up message support.
+rho has a single `run_agent_loop` function with no steering or follow-up message support. Cancellation is raced against every async boundary via `tokio::select!`.
 
-> **Source:** `rho:crates/rho-agent/src/agent_loop.rs:56-318`
+> **Source:** `rho:crates/rho-agent/src/agent_loop.rs:57-342`
 
 ```
 loop:
-  Checkpoint 1: check_should_stop (cancellation + channel closure)
-  Stream LLM response
+  Checkpoint: check_should_stop (cancellation + channel closure)
+  Stream LLM response (raced against cancellation via tokio::select!)
   If tool calls:
-    Checkpoint 2: check_should_stop
-    Execute tools (barrier scheduling)
-    Checkpoint 3: check_should_stop
+    Checkpoint: check_should_stop
+    Execute tools (barrier scheduling, each raced against cancellation)
+    Checkpoint: check_should_stop
     continue
   Else:
     Return outcome (Stop or MaxTokens)
@@ -168,7 +169,6 @@ pub enum Concurrency {
 
 **Gaps vs pi_agent_rust:**
 - No concurrency cap (all shared tools launch simultaneously)
-- No abort racing on the batch level (only discrete checkpoints)
 - No steering checks between exclusive tools
 
 ---
@@ -177,7 +177,7 @@ pub enum Concurrency {
 
 ### 3.1 Streaming Tool Output
 
-Both reference implementations support **incremental tool output** via callbacks during execution. rho does not.
+All three implementations support **incremental tool output** via callbacks during execution.
 
 **oh-my-pi:** Tools receive an `onUpdate` callback in their execute context. The `ToolExecutionUpdate` event carries partial results to the UI.
 
@@ -187,14 +187,9 @@ Both reference implementations support **incremental tool output** via callbacks
 
 > **Source:** `pi-agent-rust:src/tools.rs:50-57` (trait), `pi-agent-rust:src/tools.rs:86-89` (`ToolUpdate` struct), `pi-agent-rust:src/tools.rs:1868` (bash emit)
 
-```rust
-pub struct ToolUpdate {
-    pub content: String,
-    pub details: Option<serde_json::Value>,
-}
-```
+**rho:** `Tool::execute` accepts `Option<&OnToolUpdate>` where `OnToolUpdate = Arc<dyn Fn(&str) + Send + Sync>`. The agent loop creates per-tool callbacks via `make_update_callback()` that forward chunks to the event channel as `AgentEvent::ToolExecutionUpdate { id, content }` using non-blocking `try_send`.
 
-**rho gap:** `BashTool` already collects output into a `TailBuffer` with a closure callback (`crates/rho/src/tools/bash.rs:101-106`), but the callback only appends to a local buffer. Wiring it to emit `AgentEvent::ToolExecutionUpdate` events would be straightforward.
+> **Source:** `rho:crates/rho-agent/src/tools.rs:29` (type), `rho:crates/rho-agent/src/agent_loop.rs:381-393` (callback factory)
 
 ### 3.2 Non-Abortable Tools
 
@@ -253,13 +248,18 @@ Abort is raced against execution at **three granularities:**
 2. Tool-level: individual exclusive tool raced against abort
 3. Batch-level: `buffer_unordered` batch raced against abort
 
-### 4.3 rho: CancellationToken + Checkpoints
+### 4.3 rho: CancellationToken + Racing
 
-Uses `tokio_util::sync::CancellationToken`. Only checked at 3 discrete checkpoints — no racing.
+Uses `tokio_util::sync::CancellationToken`. Cancellation is raced via `tokio::select!` at four granularities:
 
-> **Source:** `rho:crates/rho-agent/src/agent_loop.rs:322-337` (`check_should_stop`)
+1. **Stream-level:** LLM SSE stream raced against `cancel.cancelled()` (`agent_loop.rs:122-130`)
+2. **Tool-level:** Individual exclusive tool execution raced against cancellation (`agent_loop.rs:267-275`)
+3. **Batch-level:** Shared tool batch (`join_all`) raced against cancellation in `flush_shared_batch` (`agent_loop.rs:364-372`)
+4. **Retry-level:** Backoff delay raced against cancellation (`agent_loop.rs:156-161`)
 
-**Gap:** A long-running bash command or slow LLM stream won't be interrupted until the next checkpoint. Adding `tokio::select!` racing would provide immediate cancellation.
+Additionally, 3 discrete `check_should_stop` checkpoints guard turn boundaries.
+
+> **Source:** `rho:crates/rho-agent/src/agent_loop.rs:397-412` (`check_should_stop`)
 
 ---
 
@@ -344,11 +344,20 @@ Standard replace + hashline. Same fuzzy matching and Unicode normalization.
 
 > **Source:** `pi-agent-rust:src/tools.rs` (edit tool implementations around line 2077+)
 
-### 7.3 rho: No Edit Tool
+### 7.3 rho: Replace Mode with Fuzzy Matching
 
-rho only has a `WriteTool` (full file overwrite). **This is the largest feature gap for a coding agent.**
+rho has an `EditTool` implementing replace mode (`old_string` / `new_string`) with fuzzy matching:
 
-> **Source:** `rho:crates/rho/src/tools/write.rs`
+- **Exact match** fast path, then normalized match (trailing whitespace stripped, Unicode spaces/quotes/dashes normalized), then NFC/NFD variants
+- Line ending detection/preservation (CRLF vs LF)
+- BOM (Byte Order Mark) preservation
+- Atomic write via temp file + rename
+- Ambiguity rejection (multiple matches → error)
+- Contextual diff output via `similar` crate
+
+> **Source:** `rho:crates/rho/src/tools/edit.rs`
+
+**Remaining gap vs references:** No hashline or patch edit modes.
 
 ---
 
@@ -407,13 +416,13 @@ Features:
 - **Token estimation:** `CHARS_PER_TOKEN_ESTIMATE = 3` (conservative for code)
 - **Settings:** configurable `context_window_tokens`, `reserve_tokens` (~8%), `keep_recent_tokens` (~10%)
 
-### 9.3 rho: Static Summarization
+### 9.3 rho: Foreground Summarization with File Tracking
 
-Basic compaction with LLM-generated summary. No file tracking, no background worker, no custom hooks.
+Compaction with LLM-generated summary and file operation tracking. `FileOperations` struct extracts read/written/edited files from tool call blocks and includes them in the summarization context. Supports iterative summarization (updating prior summaries). No background worker, no custom hooks.
 
-> **Source:** `rho:crates/rho/src/compaction/compact.rs`
+> **Source:** `rho:crates/rho/src/compaction/compact.rs`, `rho:crates/rho/src/compaction/file_ops.rs`
 
-**Gap:** File operation tracking in summaries would significantly improve compaction quality with minimal effort.
+**Remaining gaps:** No background compaction worker, no custom hooks.
 
 ---
 
@@ -448,7 +457,7 @@ Superset of oh-my-pi with additional events:
 
 ### 10.3 rho Events
 
-> **Source:** `rho:crates/rho-agent/src/events.rs:7-26`
+> **Source:** `rho:crates/rho-agent/src/events.rs:7-28`
 
 ```rust
 pub enum AgentEvent {
@@ -456,6 +465,7 @@ pub enum AgentEvent {
     TextDelta(String),
     ThinkingDelta(String),
     ToolCallStart { id: String, name: String },
+    ToolExecutionUpdate { id: String, content: String },
     ToolCallResult { id: String, is_error: bool },
     MessageComplete(AssistantMessage),
     ToolResultComplete { tool_use_id: String, content: Arc<String>, is_error: bool },
@@ -465,7 +475,6 @@ pub enum AgentEvent {
 ```
 
 **Gaps:**
-- No `ToolExecutionUpdate` (streaming tool output)
 - No `AgentStart` / `AgentEnd` lifecycle events
 - No compaction events
 - No `TurnEnd` with combined message + tool results
@@ -559,16 +568,18 @@ All three use JSONL-based session files with snowflake IDs and breadcrumb files 
 | Feature | oh-my-pi | pi_agent_rust | rho | Status |
 |---------|----------|---------------|-----|--------|
 | Tool concurrency (shared/exclusive) | Promise chain | `buffer_unordered(8)` | `join_all` | **Done** |
+| Streaming tool output | `onUpdate` callback | `on_update` callback | `OnToolUpdate` + `ToolExecutionUpdate` event | **Done** |
+| Abort racing (stream/tool/batch) | `AbortSignal.any()` | `futures::select!` at 3 levels | `tokio::select!` at 4 levels | **Done** |
+| Edit tool (replace mode) | 3 modes (replace/patch/hashline) | 2 modes (replace/hashline) | Replace mode + fuzzy matching | **Done** |
+| Fuzzy matching (edit) | Yes + Unicode NFC/NFD | Yes + Unicode NFC/NFD | Yes + Unicode NFC/NFD | **Done** |
+| File tracking in compaction | Via extensions | Built-in `FileOperations` | Built-in `FileOperations` | **Done** |
+| Channel error handling | N/A (in-process) | N/A | `check_should_stop` | **Done** |
 | Steering messages (mid-turn interrupts) | Dual-loop + `getSteeringMessages` | Two-tier queue | None | Gap |
 | Follow-up messages (autonomous continuation) | Outer loop + `getFollowUpMessages` | Follow-up queue | None | Gap |
-| Streaming tool output | `onUpdate` callback | `on_update` callback | None | Gap |
-| Abort racing (stream/tool/batch) | `AbortSignal.any()` | `futures::select!` at 3 levels | 3 checkpoints only | Gap |
 | Intent tracing | `_i` field injection | None | None | Gap |
 | Delta throttling | 50ms batch + merge | None | None | Gap |
-| Edit tool | 3 modes (replace/patch/hashline) | 2 modes (replace/hashline) | None (write only) | Gap |
-| Fuzzy matching (edit) | Yes + Unicode NFC/NFD | Yes + Unicode NFC/NFD | N/A | Gap |
+| Edit tool (hashline/patch modes) | Patch + hashline | Hashline | None | Gap |
 | Context transform hooks | `transformContext` + `convertToLlm` | None | None | Gap |
-| File tracking in compaction | Via extensions | Built-in `FileOperations` | None | Gap |
 | Background compaction | Via hooks | Two-phase worker | Foreground | Gap |
 | Extension/hook system | Lifecycle hooks + MCP | JS/Native/WASM + permissions | None | Gap |
 | Sub-agents | Embedded defs + handoff | None | None | Gap |
@@ -576,19 +587,20 @@ All three use JSONL-based session files with snowflake IDs and breadcrumb files 
 | Lenient arg validation | `lenientArgValidation` | None | None | Gap |
 | Tool batch metadata | `batchId`, `index`, `total` | None | None | Gap |
 | Concurrency cap | Unbounded (Promise.all) | `MAX_CONCURRENT_TOOLS = 8` | Unbounded (`join_all`) | Gap |
-| Channel error handling | N/A (in-process) | N/A | `check_should_stop` | **Done** |
+| Lifecycle events (`TurnEnd`) | `turn_end` with message + results | Full lifecycle | `TurnStart` + `Done` only | Gap |
 
 ---
 
 ## Prioritized Backlog
 
-### P0 — High impact, achievable now
+### Completed
 
-| ID | Feature | Effort | Impact | Reference |
-|----|---------|--------|--------|-----------|
-| P0-1 | **Streaming tool output** (`ToolExecutionUpdate` event) | Small | High UX — bash output visible in real-time | `pi-agent-rust:src/tools.rs:50-57`, `oh-my-pi:agent-loop.ts:531` |
-| P0-2 | **Abort racing on tool execution** (`tokio::select!`) | Small | Immediate cancellation of long-running tools | `pi-agent-rust:src/agent.rs:319-366` |
-| P0-3 | **Edit tool** (replace mode + fuzzy matching) | Medium | Essential coding agent feature — biggest gap | `oh-my-pi:packages/coding-agent/src/patch/index.ts`, `pi-agent-rust:src/tools.rs:2077+` |
+| ID | Feature | Commit |
+|----|---------|--------|
+| ~~P0-1~~ | **Streaming tool output** (`ToolExecutionUpdate` event + `OnToolUpdate` callback) | `bdba576` |
+| ~~P0-2~~ | **Abort racing on tool execution** (`tokio::select!` at 4 levels) | `e1be95d` |
+| ~~P0-3~~ | **Edit tool** (replace mode + fuzzy matching, BOM/CRLF, Unicode NFC/NFD) | `9f7f8af` |
+| ~~P1-4~~ | **File operation tracking in compaction** (`FileOperations` struct) | (integrated into compaction module) |
 
 ### P1 — Clear value, moderate effort
 
@@ -597,8 +609,7 @@ All three use JSONL-based session files with snowflake IDs and breadcrumb files 
 | P1-1 | **Concurrency cap** (`buffer_unordered(8)`) | Trivial | Defensive limit on parallel tools | `pi-agent-rust:src/agent.rs:55` |
 | P1-2 | **Intent tracing** (`_i` field injection) | Small | Debugging/auditing LLM tool decisions | `oh-my-pi:agent-loop.ts:126-179` |
 | P1-3 | **Delta throttling** (50ms batch + merge) | Small | Reduces UI render pressure under fast SSE | `oh-my-pi:event-stream.ts:95-164` |
-| P1-4 | **File operation tracking in compaction** | Small | Better compaction summaries | `pi-agent-rust:src/compaction.rs:116-142` |
-| P1-5 | **Lifecycle events** (`AgentStart`/`AgentEnd`, `TurnEnd`) | Small | Richer UI + extension points | `pi-agent-rust:src/agent.rs:205-311` |
+| P1-5 | **`TurnEnd` event** (combined message + tool results) | Small | Cleaner turn boundaries for steering groundwork | `pi-agent-rust:src/agent.rs:205-311` |
 
 ### P2 — Significant refactoring
 
@@ -623,46 +634,6 @@ All three use JSONL-based session files with snowflake IDs and breadcrumb files 
 
 ## Implementation Notes
 
-### P0-1: Streaming Tool Output
-
-The minimal change: add a `ToolExecutionUpdate` variant to `AgentEvent`, pass `event_tx` into tool execution, and wire `BashTool`'s existing `on_chunk` callback to emit events.
-
-```rust
-// New event variant
-AgentEvent::ToolExecutionUpdate {
-    id: String,
-    name: String,
-    partial_content: String,
-}
-```
-
-The `BashTool` already has a `Box<dyn Fn(String) + Send + Sync>` callback at `crates/rho/src/tools/bash.rs:101`. The challenge is threading `event_tx` through the `Tool::execute` signature or using a separate channel.
-
-### P0-2: Abort Racing
-
-Replace checkpoint-only cancellation with `tokio::select!` around tool execution:
-
-```rust
-tokio::select! {
-    result = tools.execute(name, input, &config.cwd, &cancel) => {
-        // process result
-    }
-    _ = cancel.cancelled() => {
-        // immediate abort
-    }
-}
-```
-
-### P0-3: Edit Tool
-
-Start with replace mode only. Core algorithm:
-1. Read file
-2. Find `old_text` in content (exact match first, fuzzy fallback)
-3. Replace with `new_text`
-4. Write atomically (temp file + rename)
-
-Fuzzy matching: normalize whitespace, try Unicode NFC/NFD variants, configurable threshold.
-
 ### P1-1: Concurrency Cap
 
-Replace `join_all` with `futures::stream::iter(futures).buffer_unordered(8).collect()`. One-line change.
+Replace `join_all` with `futures::stream::iter(futures).buffer_unordered(8).collect()` in `flush_shared_batch`. One-line change.
