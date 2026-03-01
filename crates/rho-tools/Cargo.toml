@@ -30,8 +30,8 @@ arboard = { version = "3.5.0", features = ["wayland-data-control"] }
 html-to-markdown-rs = { version = "2.24", default-features = false }
 
 # Shell
-brush-core = { version = "0.4.0", path = "../brush-core-vendored" }
-brush-builtins = { version = "0.1.0", path = "../brush-builtins-vendored" }
+brush-core = { version = "0.4.0", path = "../brush-core" }
+brush-builtins = { version = "0.1.0", path = "../brush-builtins" }
 os_pipe = "1"
 portable-pty = "0.9"
 clap = { version = "4", features = ["derive"] }
