@@ -3,6 +3,8 @@ use std::{path::Path, sync::Arc};
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
+use crate::types::Message;
+
 /// Concurrency mode for tool scheduling when multiple calls arrive in one turn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Concurrency {
@@ -27,6 +29,13 @@ pub struct ToolOutput {
 /// event channel via `try_send()`. Uses `Arc` so the callback can be
 /// cheaply cloned into inner closures (e.g. bash `on_chunk`).
 pub type OnToolUpdate = Arc<dyn Fn(&str) + Send + Sync>;
+
+/// Synchronous callback that drains queued messages from the caller.
+/// Returns an empty `Vec` when no messages are pending. Polled at tool
+/// execution boundaries (steering) and after the inner loop exhausts
+/// (follow-up). Uses `Fn` (not async) because the backing store is a
+/// `Mutex<VecDeque>` — no await needed.
+pub type MessageFetcher = Arc<dyn Fn() -> Vec<Message> + Send + Sync>;
 
 /// Trait for tools that the AI can invoke.
 #[async_trait]

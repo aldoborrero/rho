@@ -11,7 +11,7 @@ use crate::{
 	convert,
 	events::{AgentEvent, AgentOutcome},
 	registry::ToolRegistry,
-	tools::{Concurrency, OnToolUpdate},
+	tools::{Concurrency, MessageFetcher, OnToolUpdate},
 	types::{ContentBlock, Message, ToolResultMessage, Usage},
 };
 
@@ -40,6 +40,12 @@ pub struct AgentConfig {
 	/// with `AgentOutcome::Cancelled`. Cancellation is raced against LLM
 	/// streaming, tool execution, and retry delays via `tokio::select!`.
 	pub abort:         Option<CancellationToken>,
+	/// Polled at tool execution boundaries. Returns steering messages that
+	/// interrupt the current tool batch — unexecuted tools are skipped.
+	pub steering_fetcher:  Option<MessageFetcher>,
+	/// Polled when the inner loop has no more tool calls or steering. Returns
+	/// follow-up messages that start a new outer-loop iteration.
+	pub follow_up_fetcher: Option<MessageFetcher>,
 }
 
 /// Run the autonomous agent loop.

@@ -166,6 +166,8 @@ fn spawn_agent(
 		api_key:       Some(api_key.to_owned()),
 		temperature:   Some(settings.agent.temperature),
 		abort:         Some(cancel.clone()),
+		steering_fetcher:  None,
+		follow_up_fetcher: None,
 	};
 	let mut agent_messages = messages.to_vec();
 	tokio::spawn(async move {
