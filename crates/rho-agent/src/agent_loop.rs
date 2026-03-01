@@ -434,6 +434,13 @@ fn wrap_tool_result(result: anyhow::Result<crate::tools::ToolOutput>) -> (Arc<St
 	}
 }
 
+/// Produce a placeholder result for a tool that was skipped due to a
+/// steering message arriving mid-batch. Preserves the tool_use → tool_result
+/// pairing invariant the LLM expects.
+fn skip_tool_result() -> (Arc<String>, bool) {
+	(Arc::new("Skipped due to queued user message.".to_owned()), true)
+}
+
 /// Emit the [`AgentEvent::Done`] event and return the outcome.
 async fn emit_done(outcome: AgentOutcome, event_tx: &mpsc::Sender<AgentEvent>) -> AgentOutcome {
 	let _ = event_tx.send(AgentEvent::Done(outcome.clone())).await;
@@ -503,6 +510,13 @@ mod tests {
 			Message::User(u) => assert_eq!(u.content, "steer me"),
 			_ => panic!("expected User message"),
 		}
+	}
+
+	#[test]
+	fn skip_tool_result_produces_error_with_skip_message() {
+		let (content, is_error) = skip_tool_result();
+		assert!(is_error);
+		assert_eq!(*content, "Skipped due to queued user message.");
 	}
 
 	#[test]
