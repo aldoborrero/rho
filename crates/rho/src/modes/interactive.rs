@@ -128,6 +128,8 @@ fn spawn_agent(
 	api_key: &str,
 	tx: &tokio::sync::mpsc::Sender<AppEvent>,
 	agent_generation: &mut u64,
+	steering_fetcher: Option<rho_agent::tools::MessageFetcher>,
+	follow_up_fetcher: Option<rho_agent::tools::MessageFetcher>,
 ) -> anyhow::Result<tokio_util::sync::CancellationToken> {
 	*agent_generation += 1;
 	let generation = *agent_generation;
@@ -166,8 +168,8 @@ fn spawn_agent(
 		api_key:       Some(api_key.to_owned()),
 		temperature:   Some(settings.agent.temperature),
 		abort:         Some(cancel.clone()),
-		steering_fetcher:  None,
-		follow_up_fetcher: None,
+		steering_fetcher,
+		follow_up_fetcher,
 	};
 	let mut agent_messages = messages.to_vec();
 	tokio::spawn(async move {
@@ -435,6 +437,13 @@ pub async fn run_interactive(
 	let mut bang_cancel: Option<tokio::sync::oneshot::Sender<()>> = None;
 	// Whether the current bang command should be excluded from context.
 	let mut bang_exclude_from_context: bool = false;
+	// Queues for injecting messages into the running agent loop.
+	// Steering messages interrupt the current tool batch; follow-up messages
+	// start a new outer-loop iteration after the inner loop exhausts.
+	let steering_queue: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<Message>>> =
+		std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
+	let follow_up_queue: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<Message>>> =
+		std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
 
 	// If an initial message was provided on the command line, send it immediately.
 	if let Some(initial_text) = cli.initial_message() {
@@ -447,6 +456,16 @@ pub async fn run_interactive(
 		app.status.clear_work_status();
 		app.status.start_working();
 		app.update_status_border(terminal.columns());
+		let sq = std::sync::Arc::clone(&steering_queue);
+		let sf: Option<rho_agent::tools::MessageFetcher> = Some(std::sync::Arc::new(move || {
+			let mut q = sq.lock().unwrap_or_else(|e| e.into_inner());
+			q.pop_front().into_iter().collect()
+		}));
+		let fq = std::sync::Arc::clone(&follow_up_queue);
+		let ff: Option<rho_agent::tools::MessageFetcher> = Some(std::sync::Arc::new(move || {
+			let mut q = fq.lock().unwrap_or_else(|e| e.into_inner());
+			q.pop_front().into_iter().collect()
+		}));
 		agent_cancel = Some(spawn_agent(
 			&model,
 			session.messages(),
@@ -456,6 +475,8 @@ pub async fn run_interactive(
 			&api_key,
 			&tx,
 			&mut agent_generation,
+			sf,
+			ff,
 		)?);
 	}
 
@@ -676,6 +697,8 @@ pub async fn run_interactive(
 										&api_key,
 										&tx,
 										&mut agent_generation,
+										None,
+										None,
 									)?);
 								},
 							}
