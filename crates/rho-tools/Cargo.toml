@@ -21,7 +21,12 @@ dashmap = "6.1"
 smallvec = { version = "1.15", features = ["write", "union"] }
 
 # Image
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+image = { version = "0.25", default-features = false, features = [
+  "png",
+  "jpeg",
+  "gif",
+  "webp",
+] }
 
 # Clipboard
 arboard = { version = "3.5.0", features = ["wayland-data-control"] }
