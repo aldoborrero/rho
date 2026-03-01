@@ -65,7 +65,7 @@ pub enum UserContent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum ToolResultContent {
-	Text { text: String },
+	Text { text: Arc<String> },
 	Image { data: String, mime_type: String },
 }
 
@@ -282,7 +282,7 @@ mod tests {
 	fn tool_result_with_error() {
 		let msg = ToolResultMessage {
 			tool_use_id: "tc_1".into(),
-			content:     vec![ToolResultContent::Text { text: "file not found".into() }],
+			content:     vec![ToolResultContent::Text { text: Arc::new("file not found".into()) }],
 			is_error:    true,
 		};
 		let json = serde_json::to_value(&msg).unwrap();

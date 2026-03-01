@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::types::{AssistantMessage, ContentBlock, Message, StopReason, Usage};
 
 // ---------------------------------------------------------------------------
@@ -27,7 +29,9 @@ fn to_ai_message(msg: &Message) -> Option<rho_ai::types::Message> {
 		Message::ToolResult(t) => {
 			Some(rho_ai::types::Message::ToolResult(rho_ai::types::ToolResultMessage {
 				tool_use_id: t.tool_use_id.clone(),
-				content:     vec![rho_ai::types::ToolResultContent::Text { text: (*t.content).clone() }],
+				content:     vec![rho_ai::types::ToolResultContent::Text {
+					text: Arc::clone(&t.content),
+				}],
 				is_error:    t.is_error,
 			}))
 		},
@@ -222,7 +226,7 @@ mod tests {
 				assert_eq!(t.content.len(), 1);
 				match &t.content[0] {
 					rho_ai::types::ToolResultContent::Text { text } => {
-						assert_eq!(text, "file1.txt\nfile2.txt");
+						assert_eq!(text.as_str(), "file1.txt\nfile2.txt");
 					},
 					_ => panic!("Expected Text content"),
 				}

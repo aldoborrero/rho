@@ -741,7 +741,7 @@ mod tests {
 	fn convert_tool_result() {
 		let msg = Message::ToolResult(ToolResultMessage {
 			tool_use_id: "tc_1".into(),
-			content:     vec![ToolResultContent::Text { text: "file contents".into() }],
+			content:     vec![ToolResultContent::Text { text: Arc::new("file contents".into()) }],
 			is_error:    false,
 		});
 		let api = convert_message(&msg);
@@ -759,7 +759,7 @@ mod tests {
 	fn convert_tool_result_with_error() {
 		let msg = Message::ToolResult(ToolResultMessage {
 			tool_use_id: "tc_2".into(),
-			content:     vec![ToolResultContent::Text { text: "command not found".into() }],
+			content:     vec![ToolResultContent::Text { text: Arc::new("command not found".into()) }],
 			is_error:    true,
 		});
 		let api = convert_message(&msg);

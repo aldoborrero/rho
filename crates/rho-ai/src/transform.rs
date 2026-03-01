@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use crate::{models::Api, types::*};
 
@@ -47,7 +48,9 @@ pub fn normalize_tool_call_id(id: &str, target_api: Api) -> String {
 fn synthetic_tool_result(tool_use_id: String) -> Message {
 	Message::ToolResult(ToolResultMessage {
 		tool_use_id,
-		content: vec![ToolResultContent::Text { text: "Tool execution was interrupted".into() }],
+		content: vec![ToolResultContent::Text {
+			text: Arc::new("Tool execution was interrupted".into()),
+		}],
 		is_error: true,
 	})
 }
@@ -256,7 +259,7 @@ mod tests {
 			}),
 			Message::ToolResult(ToolResultMessage {
 				tool_use_id: "tc_1".into(),
-				content:     vec![ToolResultContent::Text { text: "done".into() }],
+				content:     vec![ToolResultContent::Text { text: Arc::new("done".into()) }],
 				is_error:    false,
 			}),
 			Message::User(UserMessage { content: vec![UserContent::Text { text: "thanks".into() }] }),
@@ -309,7 +312,7 @@ mod tests {
 			// Only tc_a gets a result
 			Message::ToolResult(ToolResultMessage {
 				tool_use_id: "tc_a".into(),
-				content:     vec![ToolResultContent::Text { text: "ok".into() }],
+				content:     vec![ToolResultContent::Text { text: Arc::new("ok".into()) }],
 				is_error:    false,
 			}),
 			Message::User(UserMessage { content: vec![UserContent::Text { text: "next".into() }] }),
@@ -357,7 +360,7 @@ mod tests {
 			}),
 			Message::ToolResult(ToolResultMessage {
 				tool_use_id: "tc!@#1".into(),
-				content:     vec![ToolResultContent::Text { text: "ok".into() }],
+				content:     vec![ToolResultContent::Text { text: Arc::new("ok".into()) }],
 				is_error:    false,
 			}),
 		];

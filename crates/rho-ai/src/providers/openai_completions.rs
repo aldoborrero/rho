@@ -592,7 +592,7 @@ mod tests {
 	fn convert_tool_result_to_tool_role() {
 		let msg = Message::ToolResult(ToolResultMessage {
 			tool_use_id: "call_1".into(),
-			content:     vec![ToolResultContent::Text { text: "output".into() }],
+			content:     vec![ToolResultContent::Text { text: Arc::new("output".into()) }],
 			is_error:    false,
 		});
 		let api = convert_message(&msg);
@@ -815,7 +815,7 @@ mod tests {
 	fn convert_tool_result_content() {
 		let msg = Message::ToolResult(ToolResultMessage {
 			tool_use_id: "call_xyz".into(),
-			content:     vec![ToolResultContent::Text { text: "file contents here".into() }],
+			content:     vec![ToolResultContent::Text { text: Arc::new("file contents here".into()) }],
 			is_error:    false,
 		});
 		let api = convert_message(&msg);
