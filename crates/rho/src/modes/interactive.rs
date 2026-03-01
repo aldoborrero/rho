@@ -663,43 +663,62 @@ pub async fn run_interactive(
 									});
 								},
 								InputAction::UserMessage(text) => {
-									// If already streaming, cancel the current agent run
-									// first. cancel_streaming increments agent_generation
-									// immediately, closing the race window where stale
-									// events could corrupt the new agent's state.
-									if matches!(mode, AppMode::Streaming) {
-										if let Some(partial) = cancel_streaming(
-											&mut mode,
-											&mut app,
-											&terminal,
-											&mut agent_generation,
-											&mut agent_cancel,
-										) {
-											session.append(Message::Assistant(partial)).await?;
-										}
-									}
-
 									let user_msg = Message::User(UserMessage { content: text.to_owned() });
 									app.chat.add_message(user_msg.clone());
-									session.append(user_msg).await?;
 
-									mode = AppMode::Streaming;
-									app.chat.start_streaming();
-									app.status.clear_work_status();
-									app.status.start_working();
-									app.update_status_border(terminal.columns());
-									agent_cancel = Some(spawn_agent(
-										&model,
-										session.messages(),
-										&tools,
-										&system_prompt,
-										&settings,
-										&api_key,
-										&tx,
-										&mut agent_generation,
-										None,
-										None,
-									)?);
+									if matches!(mode, AppMode::Streaming) {
+										// Steer the running agent instead of cancelling.
+										session.append(user_msg.clone()).await?;
+										steering_queue
+											.lock()
+											.unwrap_or_else(|e| e.into_inner())
+											.push_back(user_msg);
+									} else {
+										// Idle — existing behavior: spawn new agent.
+										session.append(user_msg).await?;
+
+										mode = AppMode::Streaming;
+										app.chat.start_streaming();
+										app.status.clear_work_status();
+										app.status.start_working();
+										app.update_status_border(terminal.columns());
+
+										// Clear any stale messages from previous runs.
+										steering_queue
+											.lock()
+											.unwrap_or_else(|e| e.into_inner())
+											.clear();
+										follow_up_queue
+											.lock()
+											.unwrap_or_else(|e| e.into_inner())
+											.clear();
+
+										let sq = std::sync::Arc::clone(&steering_queue);
+										let sf: Option<rho_agent::tools::MessageFetcher> =
+											Some(std::sync::Arc::new(move || {
+												let mut q = sq.lock().unwrap_or_else(|e| e.into_inner());
+												q.pop_front().into_iter().collect()
+											}));
+										let fq = std::sync::Arc::clone(&follow_up_queue);
+										let ff: Option<rho_agent::tools::MessageFetcher> =
+											Some(std::sync::Arc::new(move || {
+												let mut q = fq.lock().unwrap_or_else(|e| e.into_inner());
+												q.pop_front().into_iter().collect()
+											}));
+
+										agent_cancel = Some(spawn_agent(
+											&model,
+											session.messages(),
+											&tools,
+											&system_prompt,
+											&settings,
+											&api_key,
+											&tx,
+											&mut agent_generation,
+											sf,
+											ff,
+										)?);
+									}
 								},
 							}
 						} else if data == "\x1b" && matches!(result, InputResult::Ignored) {
