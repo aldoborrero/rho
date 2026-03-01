@@ -25,5 +25,9 @@ tokio = { version = "1", features = ["full", "test-util"] }
 name = "convert"
 harness = false
 
+[[bench]]
+name = "hotspots"
+harness = false
+
 [lints]
 workspace = true

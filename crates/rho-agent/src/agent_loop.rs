@@ -195,51 +195,47 @@ pub async fn run_agent_loop(
 			});
 		}
 
-		// Notify message complete
+		// Reset retry on success
+		retry_attempt = 0;
+
+		// Extract data we need *before* moving the message into
+		// `messages.push()`, saving one deep clone per turn.
+		let stop_reason = message.stop_reason.clone();
+		let tool_uses: Vec<(usize, String, String, serde_json::Value)> = message
+			.content
+			.iter()
+			.enumerate()
+			.filter_map(|(idx, b)| match b {
+				ContentBlock::ToolUse { id, name, input } => {
+					Some((idx, id.clone(), name.clone(), input.clone()))
+				},
+				_ => None,
+			})
+			.collect();
+
+		// Notify message complete (clone for event channel).
 		let _ = event_tx
 			.send(AgentEvent::MessageComplete(message.clone()))
 			.await;
 
-		// Reset retry on success
-		retry_attempt = 0;
-
-		// Check for tool calls
-		let has_tool_calls = message
-			.content
-			.iter()
-			.any(|b| matches!(b, ContentBlock::ToolUse { .. }));
-
 		// Append assistant message to both histories. Push the original
 		// ai-format message directly — no redundant agent→ai reconversion.
-		messages.push(Message::Assistant(message.clone()));
+		// Move instead of clone — tool data is already extracted above.
+		messages.push(Message::Assistant(message));
 		ai_messages.push(rho_ai::types::Message::Assistant(ai_msg));
 
-		if has_tool_calls {
-			// Collect tool-use blocks with their original index for ordered
-			// result emission.
-			let tool_uses: Vec<(usize, &str, &str, &serde_json::Value)> = message
-				.content
-				.iter()
-				.enumerate()
-				.filter_map(|(idx, b)| match b {
-					ContentBlock::ToolUse { id, name, input } => {
-						Some((idx, id.as_str(), name.as_str(), input))
-					},
-					_ => None,
-				})
-				.collect();
-
+		if !tool_uses.is_empty() {
 			// Checkpoint: before executing any tools.
 			if let Some(outcome) = check_should_stop(&cancel, &event_tx).await {
 				return outcome;
 			}
 
 			// Emit all ToolCallStart events upfront.
-			for &(_, id, name, _) in &tool_uses {
+			for (_, id, name, _) in &tool_uses {
 				let _ = event_tx
 					.send(AgentEvent::ToolCallStart {
-						id:   id.to_owned(),
-						name: name.to_owned(),
+						id:   id.clone(),
+						name: name.clone(),
 					})
 					.await;
 			}
@@ -252,9 +248,9 @@ pub async fn run_agent_loop(
 			let mut pending_shared: Vec<(usize, &str, &str, &serde_json::Value)> = Vec::new();
 			let mut cancelled = false;
 
-			for (batch_idx, &(_, id, name, input)) in tool_uses.iter().enumerate() {
+			for (batch_idx, (_, id, name, input)) in tool_uses.iter().enumerate() {
 				if tools.concurrency(name) == Concurrency::Shared {
-					pending_shared.push((batch_idx, id, name, input));
+					pending_shared.push((batch_idx, id.as_str(), name.as_str(), input));
 				} else {
 					// Barrier: flush all pending shared tools first.
 					if !pending_shared.is_empty() {
@@ -269,7 +265,7 @@ pub async fn run_agent_loop(
 					// Execute exclusive tool alone, raced against cancellation.
 					let cb = make_update_callback(&event_tx, id);
 					let result = tokio::select! {
-						result = tools.execute(name, input.clone(), &config.cwd, &cancel, Some(&cb)) => {
+						result = tools.execute(name, input, &config.cwd, &cancel, Some(&cb)) => {
 							wrap_tool_result(result)
 						}
 						() = cancel.cancelled() => {
@@ -296,28 +292,28 @@ pub async fn run_agent_loop(
 			}
 
 			// Emit results and append to histories in original order.
-			for (batch_idx, &(_, id, _, _)) in tool_uses.iter().enumerate() {
+			for (batch_idx, (_, id, _, _)) in tool_uses.iter().enumerate() {
 				let (content, is_error) = results[batch_idx]
 					.take()
 					.expect("all tool results should be populated");
 
 				let _ = event_tx
 					.send(AgentEvent::ToolCallResult {
-						id: id.to_owned(),
+						id: id.clone(),
 						is_error,
 					})
 					.await;
 
 				let _ = event_tx
 					.send(AgentEvent::ToolResultComplete {
-						tool_use_id: id.to_owned(),
+						tool_use_id: id.clone(),
 						content:     Arc::clone(&content),
 						is_error,
 					})
 					.await;
 
 				let tool_msg = Message::ToolResult(ToolResultMessage {
-					tool_use_id: id.to_owned(),
+					tool_use_id: id.clone(),
 					content,
 					is_error,
 				});
@@ -333,7 +329,7 @@ pub async fn run_agent_loop(
 		}
 
 		// No tool calls — check terminal conditions
-		let outcome = match message.stop_reason.as_ref() {
+		let outcome = match stop_reason.as_ref() {
 			Some(crate::types::StopReason::MaxTokens) => {
 				AgentOutcome::MaxTokens { usage: cumulative_usage }
 			},
@@ -363,7 +359,7 @@ async fn flush_shared_batch(
 		.map(|&(_, tid, _, _)| make_update_callback(event_tx, tid))
 		.collect();
 	let futures = batch.iter().zip(callbacks.iter()).map(|(&(_, _, n, inp), cb)| {
-		tools.execute(n, inp.clone(), cwd, cancel, Some(cb))
+		tools.execute(n, inp, cwd, cancel, Some(cb))
 	});
 	tokio::select! {
 		batch_results = join_all(futures) => {
