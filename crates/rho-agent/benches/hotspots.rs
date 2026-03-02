@@ -17,18 +17,18 @@ fn build_assistant_message() -> AssistantMessage {
 	AssistantMessage {
 		content:     vec![
 			ContentBlock::Thinking {
-				thinking: "The user wants me to read the file and find the relevant function. \
-				           I should use the bash tool to cat the file and then identify the \
-				           function they're referring to. Let me check the file structure first \
-				           to understand the codebase layout before making changes. I need to \
-				           consider that the file might be large, so I should use head to limit \
-				           output. Also need to check if there are any related test files."
+				thinking: "The user wants me to read the file and find the relevant function. I \
+				           should use the bash tool to cat the file and then identify the function \
+				           they're referring to. Let me check the file structure first to understand \
+				           the codebase layout before making changes. I need to consider that the \
+				           file might be large, so I should use head to limit output. Also need to \
+				           check if there are any related test files."
 					.to_owned(),
 			},
 			ContentBlock::Text {
-				text: "I'll read the file to find the function you mentioned. Let me check \
-				       the current implementation first. This should help us understand the \
-				       structure before making any modifications."
+				text: "I'll read the file to find the function you mentioned. Let me check the \
+				       current implementation first. This should help us understand the structure \
+				       before making any modifications."
 					.to_owned(),
 			},
 			ContentBlock::ToolUse {
@@ -87,10 +87,9 @@ fn build_large_assistant_message() -> AssistantMessage {
 fn bench_assistant_message_clone(c: &mut Criterion) {
 	let mut group = c.benchmark_group("hotspot1_assistant_message_clone");
 
-	for (label, msg) in [
-		("normal", build_assistant_message()),
-		("large_thinking", build_large_assistant_message()),
-	] {
+	for (label, msg) in
+		[("normal", build_assistant_message()), ("large_thinking", build_large_assistant_message())]
+	{
 		// Current: two clones (simulating event send + messages.push)
 		group.bench_function(format!("current_2x_clone/{label}"), |b| {
 			b.iter(|| {
@@ -306,7 +305,8 @@ fn bench_callback_id_clone(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
-// Hotspot 6: Full conversion round-trip (to_ai_content_block clones all strings)
+// Hotspot 6: Full conversion round-trip (to_ai_content_block clones all
+// strings)
 //
 // Current: clone each field
 // Optimized: Arc<String> fields — Arc::clone is refcount bump
@@ -315,23 +315,17 @@ fn bench_callback_id_clone(c: &mut Criterion) {
 fn bench_content_block_clone(c: &mut Criterion) {
 	let mut group = c.benchmark_group("hotspot6_content_block_conversion");
 
-	let thinking_block = ContentBlock::Thinking {
-		thinking: "x".repeat(4096),
-	};
-	let text_block = ContentBlock::Text {
-		text: "y".repeat(1024),
-	};
+	let thinking_block = ContentBlock::Thinking { thinking: "x".repeat(4096) };
+	let text_block = ContentBlock::Text { text: "y".repeat(1024) };
 	let tool_use_block = ContentBlock::ToolUse {
 		id:    "toolu_abc123def456".to_owned(),
 		name:  "bash".to_owned(),
 		input: serde_json::json!({"command": "ls -la", "description": "list files"}),
 	};
 
-	for (label, block) in [
-		("thinking_4KB", &thinking_block),
-		("text_1KB", &text_block),
-		("tool_use", &tool_use_block),
-	] {
+	for (label, block) in
+		[("thinking_4KB", &thinking_block), ("text_1KB", &text_block), ("tool_use", &tool_use_block)]
+	{
 		// Current: full deep clone (what to_ai_content_block does)
 		group.bench_function(format!("clone/{label}"), |b| {
 			b.iter(|| {
@@ -356,7 +350,9 @@ fn bench_full_turn_simulation(c: &mut Criterion) {
 
 	let message = build_assistant_message();
 	let tool_ids = ["toolu_001", "toolu_002", "toolu_003"];
-	let tool_results: Vec<Arc<String>> = (0..3).map(|i| Arc::new(format!("Result {i}: {}", "x".repeat(500)))).collect();
+	let tool_results: Vec<Arc<String>> = (0..3)
+		.map(|i| Arc::new(format!("Result {i}: {}", "x".repeat(500))))
+		.collect();
 	let tool_input = serde_json::json!({"command": "ls -la"});
 	let chunks_per_tool = 50;
 

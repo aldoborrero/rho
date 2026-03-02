@@ -61,6 +61,11 @@ fn noop_theme() -> MarkdownTheme {
 				tee_right:    "├",
 				cross:        "┼",
 			},
+			tree:           rho_tui::TreeSymbols {
+				branch:   "├── ",
+				last:     "└── ",
+				vertical: "│   ",
+			},
 			quote_border:   "▐",
 			hr_char:        "─",
 			spinner_frames: &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
