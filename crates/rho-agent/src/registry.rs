@@ -72,7 +72,8 @@ impl ToolRegistry {
 	/// fallback).
 	#[must_use]
 	pub fn concurrency(&self, name: &str) -> Concurrency {
-		self.tools
+		self
+			.tools
 			.get(name)
 			.map_or(Concurrency::Exclusive, |t| t.concurrency())
 	}

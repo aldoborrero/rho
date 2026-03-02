@@ -22,9 +22,7 @@ fn build_conversation(turns: usize) -> Vec<Message> {
 		let id = format!("toolu_{i:06}");
 		msgs.push(Message::Assistant(AssistantMessage {
 			content:     vec![
-				ContentBlock::Text {
-					text: format!("Let me check that file for you (turn {i})."),
-				},
+				ContentBlock::Text { text: format!("Let me check that file for you (turn {i}).") },
 				ContentBlock::ToolUse {
 					id:    id.clone(),
 					name:  "bash".to_owned(),
@@ -46,19 +44,17 @@ fn build_conversation(turns: usize) -> Vec<Message> {
 		msgs.push(Message::ToolResult(ToolResultMessage {
 			tool_use_id: id,
 			content:     std::sync::Arc::new(format!(
-				"use std::io::{{self, Write}};\n\
-				 fn main() -> io::Result<()> {{\n\
-				     let mut stdout = io::stdout().lock();\n\
-				     writeln!(stdout, \"Hello from turn {i}\")?;\n\
-				     Ok(())\n\
-				 }}\n\
-				 // end of file (line ~200 chars padding: {})",
+				"use std::io::{{self, Write}};\nfn main() -> io::Result<()> {{\nlet mut stdout = \
+				 io::stdout().lock();\nwriteln!(stdout, \"Hello from turn {i}\")?;\nOk(())\n}}\n// \
+				 end of file (line ~200 chars padding: {})",
 				"x".repeat(80)
 			)),
 			is_error:    false,
 		}));
 		msgs.push(Message::User(UserMessage {
-			content: format!("Now update the function on line 3 to accept a name parameter (turn {i})."),
+			content: format!(
+				"Now update the function on line 3 to accept a name parameter (turn {i})."
+			),
 		}));
 	}
 	msgs
@@ -222,15 +218,15 @@ fn build_ai_assistant_message() -> rho_ai::types::AssistantMessage {
 	rho_ai::types::AssistantMessage {
 		content:     vec![
 			rho_ai::types::ContentBlock::Thinking {
-				thinking: "The user wants me to read the file and find the relevant function. \
-				           I should use the bash tool to cat the file and then identify the \
-				           function they're referring to. Let me check the file structure first \
-				           to understand the codebase layout before making changes."
+				thinking: "The user wants me to read the file and find the relevant function. I \
+				           should use the bash tool to cat the file and then identify the function \
+				           they're referring to. Let me check the file structure first to understand \
+				           the codebase layout before making changes."
 					.to_owned(),
 			},
 			rho_ai::types::ContentBlock::Text {
-				text: "I'll read the file to find the function you mentioned. Let me check \
-				       the current implementation first."
+				text: "I'll read the file to find the function you mentioned. Let me check the \
+				       current implementation first."
 					.to_owned(),
 			},
 			rho_ai::types::ContentBlock::ToolUse {
@@ -381,7 +377,9 @@ fn bench_context_construction(c: &mut Criterion) {
 				|| (ai_messages.clone(), ai_tools.clone()),
 				|(mut msgs, mut tools)| {
 					let mut ctx = rho_ai::types::Context {
-						system_prompt: Some(std::sync::Arc::new("You are a helpful assistant.".to_owned())),
+						system_prompt: Some(std::sync::Arc::new(
+							"You are a helpful assistant.".to_owned(),
+						)),
 						messages:      std::mem::take(&mut msgs),
 						tools:         std::mem::take(&mut tools),
 					};
