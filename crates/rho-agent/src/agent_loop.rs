@@ -640,4 +640,163 @@ mod tests {
 		assert_eq!(drain_messages(f.as_ref()).len(), 1);
 		assert!(drain_messages(f.as_ref()).is_empty());
 	}
+
+	// --- Integration tests for execute_tool_calls with steering ---
+
+	/// A mock tool that always succeeds, returning "<name> ran".
+	/// Uses `Concurrency::Exclusive` so each tool gets its own scheduling
+	/// barrier with poll points before execution.
+	struct MockExclusiveTool {
+		name: &'static str,
+	}
+
+	#[async_trait::async_trait]
+	impl crate::tools::Tool for MockExclusiveTool {
+		fn name(&self) -> &'static str {
+			self.name
+		}
+
+		fn description(&self) -> &'static str {
+			"mock"
+		}
+
+		fn input_schema(&self) -> serde_json::Value {
+			serde_json::json!({})
+		}
+
+		fn concurrency(&self) -> crate::tools::Concurrency {
+			crate::tools::Concurrency::Exclusive
+		}
+
+		async fn execute(
+			&self,
+			_input: &serde_json::Value,
+			_cwd: &std::path::Path,
+			_cancel: &tokio_util::sync::CancellationToken,
+			_on_update: Option<&crate::tools::OnToolUpdate>,
+		) -> anyhow::Result<crate::tools::ToolOutput> {
+			Ok(crate::tools::ToolOutput { content: format!("{} ran", self.name), is_error: false })
+		}
+	}
+
+	/// Build a `ToolRegistry` containing two exclusive mock tools.
+	fn mock_registry() -> ToolRegistry {
+		let mut builder = crate::registry::ToolRegistryBuilder::new();
+		builder.register(Box::new(MockExclusiveTool { name: "tool_a" }));
+		builder.register(Box::new(MockExclusiveTool { name: "tool_b" }));
+		builder.build()
+	}
+
+	/// Build the `tool_uses` input for two tools.
+	fn two_tool_uses() -> Vec<(usize, String, String, serde_json::Value)> {
+		vec![
+			(0, "call_0".to_owned(), "tool_a".to_owned(), serde_json::json!({})),
+			(1, "call_1".to_owned(), "tool_b".to_owned(), serde_json::json!({})),
+		]
+	}
+
+	/// When a steering fetcher fires after `tool_a` executes but before
+	/// `tool_b`, the outcome should have `steering` set and `tool_b`'s
+	/// result should be `None` (skipped).
+	///
+	/// Poll sequence for two exclusive tools:
+	///   `tool_a`: POLL 1 (n=0, empty), POLL 2 (n=1, empty), execute
+	///   `tool_b`: POLL 1 (n=2, fires!), break
+	#[tokio::test]
+	async fn execute_tool_calls_skips_tools_on_steering() {
+		use std::sync::atomic::{AtomicU32, Ordering};
+
+		use crate::types::UserMessage;
+
+		let tools = mock_registry();
+		let tool_uses = two_tool_uses();
+
+		// Fires on the 3rd drain_messages call (n >= 2), which is the
+		// POLL 1 check before tool_b.
+		let poll_count = std::sync::Arc::new(AtomicU32::new(0));
+		let pc = std::sync::Arc::clone(&poll_count);
+		let fetcher: MessageFetcher = std::sync::Arc::new(move || {
+			let n = pc.fetch_add(1, Ordering::SeqCst);
+			if n >= 2 {
+				vec![Message::User(UserMessage { content: "redirect".to_owned() })]
+			} else {
+				vec![]
+			}
+		});
+
+		let (event_tx, _event_rx) = tokio::sync::mpsc::channel(64);
+		let cancel = tokio_util::sync::CancellationToken::new();
+
+		let outcome = execute_tool_calls(
+			&tool_uses,
+			&tools,
+			std::path::Path::new("/tmp"),
+			&cancel,
+			&event_tx,
+			Some(&fetcher),
+		)
+		.await;
+
+		// Steering should have fired.
+		assert!(outcome.steering.is_some(), "expected steering to be set");
+		let steering_msgs = outcome.steering.unwrap();
+		assert_eq!(steering_msgs.len(), 1);
+		match &steering_msgs[0] {
+			Message::User(u) => assert_eq!(u.content, "redirect"),
+			other => panic!("expected User message, got: {other:?}"),
+		}
+
+		// tool_a should have executed successfully.
+		assert!(outcome.results[0].is_some(), "tool_a should have run");
+		let (content, is_error) = outcome.results[0].as_ref().unwrap();
+		assert_eq!(content.as_str(), "tool_a ran");
+		assert!(!is_error);
+
+		// tool_b should have been skipped (None).
+		assert!(outcome.results[1].is_none(), "tool_b should have been skipped by steering");
+
+		// Not cancelled.
+		assert!(!outcome.cancelled);
+	}
+
+	/// When no steering messages arrive, all tools should execute and return
+	/// `Some` results.
+	#[tokio::test]
+	async fn execute_tool_calls_no_steering_returns_all_results() {
+		let tools = mock_registry();
+		let tool_uses = two_tool_uses();
+
+		// Fetcher that never returns any messages.
+		let fetcher: MessageFetcher = std::sync::Arc::new(Vec::new);
+
+		let (event_tx, _event_rx) = tokio::sync::mpsc::channel(64);
+		let cancel = tokio_util::sync::CancellationToken::new();
+
+		let outcome = execute_tool_calls(
+			&tool_uses,
+			&tools,
+			std::path::Path::new("/tmp"),
+			&cancel,
+			&event_tx,
+			Some(&fetcher),
+		)
+		.await;
+
+		// No steering should have fired.
+		assert!(outcome.steering.is_none(), "expected no steering");
+
+		// Both tools should have executed.
+		assert!(outcome.results[0].is_some(), "tool_a should have run");
+		let (content_a, is_error_a) = outcome.results[0].as_ref().unwrap();
+		assert_eq!(content_a.as_str(), "tool_a ran");
+		assert!(!is_error_a);
+
+		assert!(outcome.results[1].is_some(), "tool_b should have run");
+		let (content_b, is_error_b) = outcome.results[1].as_ref().unwrap();
+		assert_eq!(content_b.as_str(), "tool_b ran");
+		assert!(!is_error_b);
+
+		// Not cancelled.
+		assert!(!outcome.cancelled);
+	}
 }
