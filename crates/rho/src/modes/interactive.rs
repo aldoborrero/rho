@@ -7,7 +7,11 @@ use rho_agent::{
 	agent_loop::{AgentConfig, ThinkingLevel},
 	events::{AgentEvent, AgentOutcome},
 };
-use rho_tui::{Terminal, component::InputResult};
+use rho_tui::{
+	Terminal,
+	component::{Component, InputResult},
+	keys::matches_key,
+};
 
 use crate::{
 	ai::types::{
@@ -82,6 +86,11 @@ fn cancel_streaming(
 	}
 	let partial = app.chat.commit_partial_streaming();
 	app.chat.finish_streaming();
+	// Flush any remaining queued steering messages into chat.
+	for text in std::mem::take(&mut app.queued_messages) {
+		app.chat
+			.add_message(Message::User(UserMessage { content: text }));
+	}
 	app.status.finish_working();
 	app.update_status_border(terminal.columns());
 	partial
@@ -100,8 +109,8 @@ fn cancel_bang(
 	*mode = AppMode::Idle;
 }
 
-/// Convert a settings-level [`ThinkingLevel`](crate::settings::ThinkingLevel) to
-/// the agent-loop equivalent.
+/// Convert a settings-level [`ThinkingLevel`](crate::settings::ThinkingLevel)
+/// to the agent-loop equivalent.
 const fn to_agent_thinking(level: crate::settings::ThinkingLevel) -> ThinkingLevel {
 	match level {
 		crate::settings::ThinkingLevel::Off => ThinkingLevel::Off,
@@ -156,18 +165,18 @@ fn spawn_agent(
 	let agent_tools = tools.clone();
 	let agent_config = AgentConfig {
 		system_prompt: Arc::new(system_prompt.to_owned()),
-		max_tokens:    settings.agent.max_tokens,
-		thinking:      to_agent_thinking(settings.agent.thinking),
-		retry:         rho_ai::RetryConfig {
+		max_tokens: settings.agent.max_tokens,
+		thinking: to_agent_thinking(settings.agent.thinking),
+		retry: rho_ai::RetryConfig {
 			enabled:       true,
 			max_retries:   settings.retry.max_retries,
 			base_delay_ms: settings.retry.base_delay_ms,
 			max_delay_ms:  settings.retry.base_delay_ms * 16,
 		},
-		cwd:           std::env::current_dir()?,
-		api_key:       Some(api_key.to_owned()),
-		temperature:   Some(settings.agent.temperature),
-		abort:         Some(cancel.clone()),
+		cwd: std::env::current_dir()?,
+		api_key: Some(api_key.to_owned()),
+		temperature: Some(settings.agent.temperature),
+		abort: Some(cancel.clone()),
 		steering_fetcher,
 		follow_up_fetcher,
 	};
@@ -189,6 +198,33 @@ fn spawn_agent(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Resolve and apply a model change, updating the status bar and chat.
+#[allow(clippy::too_many_arguments, reason = "mirrors apply_command_result parameter set")]
+fn apply_model_change(
+	name: &str,
+	model: &mut rho_ai::Model,
+	api_key: &mut String,
+	app: &mut tui::App,
+	terminal: &impl Terminal,
+	registry: &rho_ai::ModelRegistry,
+	settings: &Settings,
+	models_config: &ModelsConfig,
+) {
+	match crate::models_config::resolve_model(name, registry, settings, models_config) {
+		Ok(resolved) => {
+			let old_id = model.id.clone();
+			*model = resolved.model;
+			*api_key = resolved.api_key;
+			app.status.set_model(&model.id);
+			app.update_status_border(terminal.columns());
+			show_chat_message(app, &format!("Model changed: {old_id} → {}", model.id));
+		},
+		Err(e) => {
+			show_chat_message(app, &format!("Failed to switch model: {e}"));
+		},
+	}
+}
 
 /// Add a system/informational message to the chat display.
 fn show_chat_message(app: &mut tui::App, text: &str) {
@@ -280,19 +316,20 @@ async fn apply_command_result(
 			}
 		},
 		CommandResult::ModelChange(new_model) => {
-			match crate::models_config::resolve_model(&new_model, registry, settings, models_config) {
-				Ok(resolved) => {
-					let old_id = model.id.clone();
-					*model = resolved.model;
-					*api_key = resolved.api_key;
-					app.status.set_model(&model.id);
-					app.update_status_border(terminal.columns());
-					show_chat_message(app, &format!("Model changed: {old_id} → {}", model.id));
-				},
-				Err(e) => {
-					show_chat_message(app, &format!("Failed to switch model: {e}"));
-				},
-			}
+			apply_model_change(
+				&new_model,
+				model,
+				api_key,
+				app,
+				terminal,
+				registry,
+				settings,
+				models_config,
+			);
+		},
+		CommandResult::ShowModelSelector => {
+			let items = crate::tui::model_selector::build_model_items(registry, settings, &model.id);
+			app.show_model_selector(items);
 		},
 		CommandResult::SettingsChanged => match crate::settings::reload(cli) {
 			Ok(new_settings) => {
@@ -509,6 +546,47 @@ pub async fn run_interactive(
 			},
 			Some(AppEvent::Terminal(event)) => match event {
 				rho_tui::TerminalEvent::Input(ref data) => {
+					// Model selector: intercept all input when active.
+					// When open during streaming, Ctrl+C/Esc first dismisses the
+					// selector; a second press cancels the agent.
+					if app.has_model_selector() {
+						let bytes = data.as_bytes();
+						let is_confirm = matches_key(bytes, "enter", false)
+							|| matches_key(bytes, "return", false)
+							|| data == "\n";
+						let is_cancel = matches_key(bytes, "escape", false)
+							|| matches_key(bytes, "esc", false)
+							|| data == "\x03"; // Ctrl+C
+
+						if is_confirm {
+							let selected = app
+								.model_selector
+								.as_ref()
+								.and_then(|s| s.selected_item())
+								.map(|item| item.value.clone());
+							app.hide_model_selector();
+							if let Some(selected) = selected {
+								apply_model_change(
+									&selected,
+									&mut model,
+									&mut api_key,
+									&mut app,
+									&terminal,
+									&registry,
+									&settings,
+									&models_config,
+								);
+							}
+						} else if is_cancel {
+							app.hide_model_selector();
+						} else if let Some(ref mut selector) = app.model_selector {
+							selector.handle_input(data);
+						}
+
+						app.tui.request_render();
+						app.render_to_tui(&mut terminal)?;
+						continue;
+					}
 					// Ctrl+C
 					if data == "\x03" {
 						if matches!(mode, AppMode::Streaming) {
@@ -664,16 +742,17 @@ pub async fn run_interactive(
 								},
 								InputAction::UserMessage(text) => {
 									let user_msg = Message::User(UserMessage { content: text.to_owned() });
-									app.chat.add_message(user_msg.clone());
 
 									if matches!(mode, AppMode::Streaming) {
-										// Steer the running agent instead of cancelling.
+										// Don't add to chat yet — show in banner until agent processes it.
 										session.append(user_msg.clone()).await?;
 										steering_queue
 											.lock()
 											.unwrap_or_else(|e| e.into_inner())
 											.push_back(user_msg);
+										app.queued_messages.push(text.to_owned());
 									} else {
+										app.chat.add_message(user_msg.clone());
 										// Idle — existing behavior: spawn new agent.
 										session.append(user_msg).await?;
 
@@ -796,6 +875,17 @@ pub async fn run_interactive(
 						// Start streaming for next LLM turn.
 						app.chat.start_streaming();
 					},
+					AgentEvent::SteeringProcessed { messages } => {
+						// Agent consumed steering — move from banner to chat.
+						for msg in &messages {
+							if let Some(pos) = app.queued_messages.iter().position(|q| q == &msg.content) {
+								app.queued_messages.remove(pos);
+							}
+							app.chat.add_message(Message::User(msg.clone()));
+						}
+						// Restart streaming state for agent's response to steering.
+						app.chat.start_streaming();
+					},
 					AgentEvent::RetryScheduled { attempt, delay_ms, error } => {
 						show_chat_message(
 							&mut app,
@@ -806,6 +896,11 @@ pub async fn run_interactive(
 						mode = AppMode::Idle;
 						agent_cancel = None;
 						app.chat.finish_streaming();
+						// Flush any remaining queued steering messages into chat.
+						for text in std::mem::take(&mut app.queued_messages) {
+							app.chat
+								.add_message(Message::User(UserMessage { content: text }));
+						}
 						app.status.finish_working();
 						app.update_status_border(terminal.columns());
 

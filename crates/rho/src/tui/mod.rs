@@ -1,5 +1,6 @@
 pub mod autocomplete;
 pub mod chat;
+pub mod model_selector;
 pub mod status;
 pub mod tool_renderers;
 pub mod welcome;
@@ -11,7 +12,11 @@ use chat::ChatComponent;
 use rho_tui::{
 	capabilities::{TerminalInfo, detect_terminal_id, get_terminal_info},
 	component::{Component, Focusable, InputResult},
-	components::{editor::Editor, spacer::Spacer},
+	components::{
+		editor::Editor,
+		select_list::{SelectItem, SelectList},
+		spacer::Spacer,
+	},
 	is_key_release,
 	symbols::{BoxSymbols, RoundedBoxSymbols, SymbolTheme, TreeSymbols},
 	terminal::{CrosstermTerminal, Terminal},
@@ -84,16 +89,23 @@ const fn default_symbols() -> SymbolTheme {
 /// App owns components directly as named struct fields — no `Rc<RefCell<T>>`.
 /// Tui is a pure differential renderer that receives pre-rendered lines.
 pub struct App {
-	pub tui:     Tui,
+	pub tui:             Tui,
 	#[allow(dead_code, reason = "holds Rc ownership — theme closures captured by editor")]
-	pub theme:   Rc<Theme>,
-	pub chat:    ChatComponent,
-	pub status:  StatusLineComponent,
-	pub editor:  Editor,
-	pub welcome: WelcomeComponent,
+	pub theme:           Rc<Theme>,
+	pub chat:            ChatComponent,
+	pub status:          StatusLineComponent,
+	pub editor:          Editor,
+	pub welcome:         WelcomeComponent,
+	/// User messages queued for the agent, shown as a banner above the editor.
+	pub queued_messages: Vec<String>,
+	/// Active model selector (inline between chat and editor).
+	pub model_selector:  Option<SelectList>,
 }
 
 impl App {
+	/// Maximum number of queued messages to display in the banner.
+	const MAX_QUEUED_BANNER_LINES: usize = 3;
+
 	/// Create a new `App` with the given model name displayed in the status bar.
 	///
 	/// Terminal capabilities are auto-detected from environment variables.
@@ -139,7 +151,16 @@ impl App {
 		let provider = RhoAutocompleteProvider::new(cwd);
 		editor.set_autocomplete_provider(Box::new(provider));
 
-		Self { tui, theme, chat, status, editor, welcome }
+		Self {
+			tui,
+			theme,
+			chat,
+			status,
+			editor,
+			welcome,
+			queued_messages: Vec::new(),
+			model_selector: None,
+		}
 	}
 
 	/// Render all components and write to the terminal via Tui's
@@ -151,10 +172,72 @@ impl App {
 		lines.extend(self.welcome.render(width));
 		lines.extend(Spacer::new(1).render(width));
 		lines.extend(self.chat.render(width));
+		lines.extend(self.render_queued_banner(width));
+		if let Some(ref mut selector) = self.model_selector {
+			lines.push(format!("  {}", self.theme.dim("Select model:")));
+			lines.extend(selector.render(width));
+		}
 		lines.extend(Spacer::new(1).render(width));
 		lines.extend(self.editor.render(width));
 		lines.extend(Spacer::new(1).render(width));
 		self.tui.render_lines(&lines, terminal)
+	}
+
+	/// Render the queued steering messages banner (appears between chat and
+	/// editor).
+	fn render_queued_banner(&self, width: u16) -> Vec<String> {
+		if self.queued_messages.is_empty() {
+			return Vec::new();
+		}
+		let total = self.queued_messages.len();
+		let overflow = total.saturating_sub(Self::MAX_QUEUED_BANNER_LINES);
+		let visible = &self.queued_messages[overflow..];
+		let max_text_width = (width as usize).saturating_sub(14);
+		let mut lines = Vec::with_capacity(visible.len() + usize::from(overflow > 0));
+		if overflow > 0 {
+			lines.push(format!("  {}", self.theme.dim(&format!("+{overflow} more queued")),));
+		}
+		for msg in visible {
+			let display = if rho_text::visible_width_str(msg) > max_text_width {
+				rho_text::truncate_to_width_str(
+					msg,
+					max_text_width,
+					rho_text::EllipsisKind::Unicode,
+					false,
+				)
+				.unwrap_or_else(|| msg.to_owned())
+			} else {
+				msg.to_owned()
+			};
+			lines.push(format!(
+				"  {} {}",
+				self.theme.dim("\u{21b3} Queued:"),
+				self.theme.fg(ThemeColor::UserMessageText, &display),
+			));
+		}
+		lines
+	}
+
+	/// Open the model selector with the given items.
+	///
+	/// The [`SelectList`] is stored directly — no callbacks. The event loop
+	/// inspects input keys after `handle_input` and reads `selected_item()`
+	/// to determine the outcome.
+	pub fn show_model_selector(&mut self, items: Vec<SelectItem>) {
+		self.model_selector = None;
+		let theme = self.theme.select_list_theme(default_symbols());
+		let list = SelectList::new(items, 10, theme);
+		self.model_selector = Some(list);
+	}
+
+	/// Close the model selector (if open).
+	pub fn hide_model_selector(&mut self) {
+		self.model_selector = None;
+	}
+
+	/// Whether the model selector is currently open.
+	pub const fn has_model_selector(&self) -> bool {
+		self.model_selector.is_some()
 	}
 
 	/// Handle raw terminal input. Routes through Tui's input listeners,
