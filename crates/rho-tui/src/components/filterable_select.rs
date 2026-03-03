@@ -25,11 +25,14 @@ pub struct FilterableSelectItem {
 }
 
 /// Combined theme for the `FilterableSelect` component.
+///
+/// `select_list_factory` is a factory function because the inner `SelectList`
+/// is rebuilt on every filter change and `SelectListTheme` is not `Clone`.
 pub struct FilterableSelectTheme {
-	pub tab_bar:     TabBarTheme,
-	pub select_list: SelectListTheme,
-	pub search_hint: Box<dyn Fn(&str) -> String>,
-	pub border:      Box<dyn Fn(&str) -> String>,
+	pub tab_bar:             TabBarTheme,
+	pub select_list_factory: Box<dyn Fn() -> SelectListTheme>,
+	pub search_hint:         Box<dyn Fn(&str) -> String>,
+	pub border:              Box<dyn Fn(&str) -> String>,
 }
 
 /// A tabbed, searchable select list.
@@ -37,14 +40,15 @@ pub struct FilterableSelectTheme {
 /// Composes `TabBar`, `Input`, and `SelectList` vertically. Filters items
 /// by active tab and fuzzy search query simultaneously.
 pub struct FilterableSelect {
-	items:       Vec<FilterableSelectItem>,
-	tab_bar:     TabBar,
-	search:      Input,
-	list:        SelectList,
-	theme:       FilterableSelectTheme,
-	all_tab_id:  String,
-	max_visible: usize,
-	cancelled:   bool,
+	items:               Vec<FilterableSelectItem>,
+	tab_bar:             TabBar,
+	search:              Input,
+	list:                SelectList,
+	select_list_factory: Box<dyn Fn() -> SelectListTheme>,
+	border:              Box<dyn Fn(&str) -> String>,
+	all_tab_id:          String,
+	max_visible:         usize,
+	cancelled:           bool,
 }
 
 impl FilterableSelect {
@@ -62,18 +66,33 @@ impl FilterableSelect {
 		let all_tab_id = tabs
 			.first()
 			.map_or_else(|| "all".to_owned(), |t| t.id.clone());
-		let tab_bar = TabBar::new("Provider", tabs, TabBarTheme::plain());
+
+		// Destructure theme — tab_bar moves into TabBar, rest stored for reuse.
+		let FilterableSelectTheme {
+			tab_bar: tab_bar_theme,
+			select_list_factory,
+			search_hint: _,
+			border,
+		} = theme;
+
+		let tab_bar = TabBar::new("Provider", tabs, tab_bar_theme);
 		let search = Input::new();
 
-		// Build initial SelectList from all items.
+		// Build initial SelectList with the real theme.
 		let select_items = items_to_select_items(&items);
-		let list = SelectList::new(select_items, max_visible, SelectListTheme::plain());
+		let list = SelectList::new(select_items, max_visible, select_list_factory());
 
-		let mut s =
-			Self { items, tab_bar, search, list, theme, all_tab_id, max_visible, cancelled: false };
-		// Rebuild with the actual theme.
-		s.rebuild_list(max_visible);
-		s
+		Self {
+			items,
+			tab_bar,
+			search,
+			list,
+			select_list_factory,
+			border,
+			all_tab_id,
+			max_visible,
+			cancelled: false,
+		}
 	}
 
 	/// Value of the currently highlighted item.
@@ -113,18 +132,12 @@ impl FilterableSelect {
 			fuzzy_results.into_iter().copied().collect()
 		};
 
-		// Step 3: rebuild SelectList with filtered items.
+		// Step 3: rebuild SelectList with filtered items and real theme.
 		let select_items: Vec<SelectItem> = matching
 			.iter()
 			.map(|item| item_to_select_item(item))
 			.collect();
-		self.list = SelectList::new(select_items, self.max_visible, SelectListTheme::plain());
-	}
-
-	/// Rebuild the list from scratch (used during construction).
-	fn rebuild_list(&mut self, max_visible: usize) {
-		let select_items = items_to_select_items(&self.items);
-		self.list = SelectList::new(select_items, max_visible, SelectListTheme::plain());
+		self.list = SelectList::new(select_items, self.max_visible, (self.select_list_factory)());
 	}
 }
 
@@ -142,7 +155,7 @@ impl Component for FilterableSelect {
 		// 3. Separator line
 		let separator_width = w.saturating_sub(4);
 		let separator = "\u{2500}".repeat(separator_width.min(60));
-		lines.push(format!("  {}", (self.theme.border)(&separator)));
+		lines.push(format!("  {}", (self.border)(&separator)));
 
 		// 4. Filtered list
 		lines.extend(self.list.render(width));
@@ -343,10 +356,10 @@ mod tests {
 
 	fn plain_theme() -> FilterableSelectTheme {
 		FilterableSelectTheme {
-			tab_bar:     TabBarTheme::plain(),
-			select_list: SelectListTheme::plain(),
-			search_hint: Box::new(|s| s.to_owned()),
-			border:      Box::new(|s| s.to_owned()),
+			tab_bar:             TabBarTheme::plain(),
+			select_list_factory: Box::new(SelectListTheme::plain),
+			search_hint:         Box::new(|s| s.to_owned()),
+			border:              Box::new(|s| s.to_owned()),
 		}
 	}
 

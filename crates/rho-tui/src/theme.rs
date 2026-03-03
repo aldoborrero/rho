@@ -292,22 +292,70 @@ impl Theme {
 	}
 
 	/// Build a `TabBarTheme` using this theme's colors.
+	///
+	/// Matches oh-my-pi's theming: bold+accent label, bold+selectedBg active
+	/// tab, muted inactive tabs.
 	pub fn tab_bar_theme(&self) -> TabBarTheme {
+		// oh-my-pi: label = bold(fg("accent", text))
+		let accent_ansi = self.fg_ansi(ThemeColor::Accent).to_owned();
+		let label: Box<dyn Fn(&str) -> String> = if accent_ansi.is_empty() {
+			Box::new(|s: &str| format!("\x1b[1m{s}\x1b[22m"))
+		} else {
+			Box::new(move |s: &str| format!("\x1b[1m{accent_ansi}{s}\x1b[39m\x1b[22m"))
+		};
+
+		// oh-my-pi: activeTab = bold(bg("selectedBg", fg("text", text)))
+		// "text" color is terminal default (empty), so it's bold + bg.
+		let bg_ansi = self.bg_ansi(ThemeBg::SelectedBg).to_owned();
+		let active_tab: Box<dyn Fn(&str) -> String> = if bg_ansi.is_empty() {
+			Box::new(|s: &str| format!("\x1b[1m{s}\x1b[22m"))
+		} else {
+			Box::new(move |s: &str| format!("\x1b[1m{bg_ansi}{s}\x1b[49m\x1b[22m"))
+		};
+
 		TabBarTheme {
-			label:        self.fg_closure(ThemeColor::Muted),
-			active_tab:   self.fg_closure(ThemeColor::Accent),
-			inactive_tab: self.fg_closure(ThemeColor::Dim),
-			hint:         self.fg_closure(ThemeColor::Dim),
+			label,
+			active_tab,
+			// oh-my-pi: inactiveTab = fg("muted", text)
+			inactive_tab: self.fg_closure(ThemeColor::Muted),
+			// oh-my-pi: hint = fg("dim", text)
+			hint: self.fg_closure(ThemeColor::Dim),
 		}
 	}
 
 	/// Build a `FilterableSelectTheme` using this theme's colors.
+	///
+	/// The `select_list_factory` is a closure that produces fresh
+	/// `SelectListTheme` instances — needed because the inner `SelectList`
+	/// is rebuilt on every filter change and `SelectListTheme` is not `Clone`.
 	pub fn filterable_select_theme(&self, symbols: SymbolTheme) -> FilterableSelectTheme {
+		// Capture ANSI color values for the select list factory closure.
+		let accent_ansi = self.fg_ansi(ThemeColor::Accent).to_owned();
+		let muted_ansi = self.fg_ansi(ThemeColor::Muted).to_owned();
+		let select_list_factory: Box<dyn Fn() -> SelectListTheme> = Box::new(move || {
+			let make_closure = |ansi: &str| -> Box<dyn Fn(&str) -> String> {
+				if ansi.is_empty() {
+					Box::new(|s: &str| s.to_owned())
+				} else {
+					let ansi = ansi.to_owned();
+					Box::new(move |s: &str| format!("{ansi}{s}\x1b[39m"))
+				}
+			};
+			SelectListTheme {
+				selected_prefix: make_closure(&accent_ansi),
+				selected_text:   make_closure(&accent_ansi),
+				description:     make_closure(&muted_ansi),
+				scroll_info:     make_closure(&muted_ansi),
+				no_match:        make_closure(&muted_ansi),
+				symbols:         symbols.clone(),
+			}
+		});
+
 		FilterableSelectTheme {
-			tab_bar:     self.tab_bar_theme(),
-			select_list: self.select_list_theme(symbols),
+			tab_bar: self.tab_bar_theme(),
+			select_list_factory,
 			search_hint: self.fg_closure(ThemeColor::Dim),
-			border:      self.fg_closure(ThemeColor::BorderMuted),
+			border: self.fg_closure(ThemeColor::BorderMuted),
 		}
 	}
 
