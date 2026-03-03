@@ -13,9 +13,7 @@ use rho_tui::{
 	capabilities::{TerminalInfo, detect_terminal_id, get_terminal_info},
 	component::{Component, Focusable, InputResult},
 	components::{
-		editor::Editor,
-		select_list::{SelectItem, SelectList},
-		spacer::Spacer,
+		FilterableSelect, FilterableSelectItem, editor::Editor, spacer::Spacer, tab_bar::Tab,
 	},
 	is_key_release,
 	symbols::{BoxSymbols, RoundedBoxSymbols, SymbolTheme, TreeSymbols},
@@ -98,8 +96,8 @@ pub struct App {
 	pub welcome:         WelcomeComponent,
 	/// User messages queued for the agent, shown as a banner above the editor.
 	pub queued_messages: Vec<String>,
-	/// Active model selector (inline between chat and editor).
-	pub model_selector:  Option<SelectList>,
+	/// Active model selector (replaces editor when open).
+	pub model_selector:  Option<FilterableSelect>,
 }
 
 impl App {
@@ -174,11 +172,13 @@ impl App {
 		lines.extend(self.chat.render(width));
 		lines.extend(self.render_queued_banner(width));
 		if let Some(ref mut selector) = self.model_selector {
+			// Model selector REPLACES the editor area.
 			lines.push(format!("  {}", self.theme.dim("Select model:")));
 			lines.extend(selector.render(width));
+		} else {
+			lines.extend(Spacer::new(1).render(width));
+			lines.extend(self.editor.render(width));
 		}
-		lines.extend(Spacer::new(1).render(width));
-		lines.extend(self.editor.render(width));
 		lines.extend(Spacer::new(1).render(width));
 		self.tui.render_lines(&lines, terminal)
 	}
@@ -218,16 +218,14 @@ impl App {
 		lines
 	}
 
-	/// Open the model selector with the given items.
+	/// Open the model selector with the given tabs and items.
 	///
-	/// The [`SelectList`] is stored directly — no callbacks. The event loop
-	/// inspects input keys after `handle_input` and reads `selected_item()`
-	/// to determine the outcome.
-	pub fn show_model_selector(&mut self, items: Vec<SelectItem>) {
-		self.model_selector = None;
-		let theme = self.theme.select_list_theme(default_symbols());
-		let list = SelectList::new(items, 10, theme);
-		self.model_selector = Some(list);
+	/// The [`FilterableSelect`] handles all input internally and returns
+	/// `InputResult::Submit(value)` on Enter or sets `is_cancelled()` on Esc.
+	pub fn show_model_selector(&mut self, tabs: Vec<Tab>, items: Vec<FilterableSelectItem>) {
+		let theme = self.theme.filterable_select_theme(default_symbols());
+		let selector = FilterableSelect::new(tabs, items, 10, theme);
+		self.model_selector = Some(selector);
 	}
 
 	/// Close the model selector (if open).

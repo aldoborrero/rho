@@ -9,8 +9,10 @@ use std::collections::HashMap;
 use crate::{
 	components::{
 		editor::{BorderColorFn, HintStyleFn},
+		filterable_select::FilterableSelectTheme,
 		markdown::MarkdownTheme,
 		select_list::SelectListTheme,
+		tab_bar::TabBarTheme,
 	},
 	highlight::HighlightColors,
 	symbols::SymbolTheme,
@@ -286,6 +288,26 @@ impl Theme {
 			scroll_info: self.fg_closure(ThemeColor::Muted),
 			no_match: self.fg_closure(ThemeColor::Muted),
 			symbols,
+		}
+	}
+
+	/// Build a `TabBarTheme` using this theme's colors.
+	pub fn tab_bar_theme(&self) -> TabBarTheme {
+		TabBarTheme {
+			label:        self.fg_closure(ThemeColor::Muted),
+			active_tab:   self.fg_closure(ThemeColor::Accent),
+			inactive_tab: self.fg_closure(ThemeColor::Dim),
+			hint:         self.fg_closure(ThemeColor::Dim),
+		}
+	}
+
+	/// Build a `FilterableSelectTheme` using this theme's colors.
+	pub fn filterable_select_theme(&self, symbols: SymbolTheme) -> FilterableSelectTheme {
+		FilterableSelectTheme {
+			tab_bar:     self.tab_bar_theme(),
+			select_list: self.select_list_theme(symbols),
+			search_hint: self.fg_closure(ThemeColor::Dim),
+			border:      self.fg_closure(ThemeColor::BorderMuted),
 		}
 	}
 

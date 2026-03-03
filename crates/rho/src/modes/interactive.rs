@@ -10,7 +10,6 @@ use rho_agent::{
 use rho_tui::{
 	Terminal,
 	component::{Component, InputResult},
-	keys::matches_key,
 };
 
 use crate::{
@@ -328,8 +327,9 @@ async fn apply_command_result(
 			);
 		},
 		CommandResult::ShowModelSelector => {
-			let items = crate::tui::model_selector::build_model_items(registry, settings, &model.id);
-			app.show_model_selector(items);
+			let (tabs, items) =
+				crate::tui::model_selector::build_model_items(registry, settings, &model.id);
+			app.show_model_selector(tabs, items);
 		},
 		CommandResult::SettingsChanged => match crate::settings::reload(cli) {
 			Ok(new_settings) => {
@@ -549,25 +549,12 @@ pub async fn run_interactive(
 					// Model selector: intercept all input when active.
 					// When open during streaming, Ctrl+C/Esc first dismisses the
 					// selector; a second press cancels the agent.
-					if app.has_model_selector() {
-						let bytes = data.as_bytes();
-						let is_confirm = matches_key(bytes, "enter", false)
-							|| matches_key(bytes, "return", false)
-							|| data == "\n";
-						let is_cancel = matches_key(bytes, "escape", false)
-							|| matches_key(bytes, "esc", false)
-							|| data == "\x03"; // Ctrl+C
-
-						if is_confirm {
-							let selected = app
-								.model_selector
-								.as_ref()
-								.and_then(|s| s.selected_item())
-								.map(|item| item.value.clone());
-							app.hide_model_selector();
-							if let Some(selected) = selected {
+					if let Some(ref mut selector) = app.model_selector {
+						match selector.handle_input(data) {
+							InputResult::Submit(value) => {
+								app.hide_model_selector();
 								apply_model_change(
-									&selected,
+									&value,
 									&mut model,
 									&mut api_key,
 									&mut app,
@@ -576,13 +563,14 @@ pub async fn run_interactive(
 									&settings,
 									&models_config,
 								);
-							}
-						} else if is_cancel {
-							app.hide_model_selector();
-						} else if let Some(ref mut selector) = app.model_selector {
-							selector.handle_input(data);
+							},
+							InputResult::Consumed => {
+								if selector.is_cancelled() {
+									app.hide_model_selector();
+								}
+							},
+							InputResult::Ignored => {},
 						}
-
 						app.tui.request_render();
 						app.render_to_tui(&mut terminal)?;
 						continue;

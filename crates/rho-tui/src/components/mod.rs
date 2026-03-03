@@ -1,6 +1,7 @@
 pub mod autocomplete;
 pub mod editor;
 pub mod editor_component;
+pub mod filterable_select;
 pub mod input;
 pub mod loader;
 pub mod markdown;
@@ -21,6 +22,7 @@ pub use editor::{
 	BorderColorFn, CompletionResult, Editor, EditorTheme, EditorTopBorder, HintStyleFn, TextCallback,
 };
 pub use editor_component::EditorComponent;
+pub use filterable_select::{FilterableSelect, FilterableSelectItem, FilterableSelectTheme};
 pub use input::Input;
 pub use loader::{CancellableLoader, Loader};
 pub use markdown::{DefaultTextStyle, Markdown, MarkdownTheme, MermaidImage};

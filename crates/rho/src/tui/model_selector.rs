@@ -1,23 +1,31 @@
-//! Model selector — builds [`SelectItem`]s from the model registry for the
-//! interactive model picker.
+//! Model selector — builds [`FilterableSelectItem`]s from the model registry
+//! for the interactive model picker with provider tabs.
 
-use rho_tui::components::select_list::SelectItem;
+use std::collections::BTreeSet;
+
+use rho_tui::components::{FilterableSelectItem, tab_bar::Tab};
 
 use crate::settings::Settings;
 
-/// Build a sorted list of [`SelectItem`]s representing every registered model.
+/// Build a sorted list of [`FilterableSelectItem`]s and provider [`Tab`]s
+/// representing every registered model.
 ///
-/// Items are sorted so that role-assigned models (default, smol, slow) appear
-/// first, followed by all others alphabetically by provider then id. The
-/// currently active model is marked with `*`.
+/// Returns a tuple of:
+/// 1. **Tabs:** `[All, Anthropic, OpenAI, ...]` — one per provider, sorted,
+///    with "All" first.
+/// 2. **Items:** Sorted so that role-assigned models (default, fast, thinking)
+///    appear first, followed by all others alphabetically by provider then id.
+///    The currently active model is marked with `*`.
 pub fn build_model_items(
 	registry: &rho_ai::ModelRegistry,
 	settings: &Settings,
 	current_model_id: &str,
-) -> Vec<SelectItem> {
+) -> (Vec<Tab>, Vec<FilterableSelectItem>) {
 	let mut entries: Vec<ModelEntry> = Vec::new();
+	let mut providers = BTreeSet::new();
 
 	for provider in registry.providers() {
+		providers.insert(provider.to_owned());
 		for model in registry.models_for_provider(provider) {
 			let role = model_role(&model.id, settings);
 			entries.push(ModelEntry {
@@ -33,7 +41,7 @@ pub fn build_model_items(
 		}
 	}
 
-	// Sort: role-assigned first (default < smol < slow), then alphabetically.
+	// Sort: role-assigned first (default < fast < thinking), then alphabetically.
 	entries.sort_by(|a, b| {
 		let a_priority = role_priority(a.role);
 		let b_priority = role_priority(b.role);
@@ -43,7 +51,20 @@ pub fn build_model_items(
 			.then_with(|| a.id.cmp(&b.id))
 	});
 
-	entries.into_iter().map(|e| e.into_select_item()).collect()
+	// Build tabs: "All" first, then one per provider (sorted).
+	let mut tabs = vec![Tab::new("all", "All")];
+	for provider in &providers {
+		// Capitalize first letter for display.
+		let label = capitalize(provider);
+		tabs.push(Tab::new(provider, &label));
+	}
+
+	let items = entries
+		.into_iter()
+		.map(|e| e.into_filterable_item())
+		.collect();
+
+	(tabs, items)
 }
 
 /// Format a context window size into a human-readable string.
@@ -93,6 +114,15 @@ const fn role_priority(role: Option<Role>) -> u8 {
 	}
 }
 
+/// Capitalize the first letter of a string.
+fn capitalize(s: &str) -> String {
+	let mut chars = s.chars();
+	match chars.next() {
+		None => String::new(),
+		Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+	}
+}
+
 // ── Internal types ──────────────────────────────────────────────────────
 
 #[derive(Clone, Copy)]
@@ -114,7 +144,7 @@ struct ModelEntry {
 }
 
 impl ModelEntry {
-	fn into_select_item(self) -> SelectItem {
+	fn into_filterable_item(self) -> FilterableSelectItem {
 		// Label: "model-name  200K  [ROLE] *"
 		let ctx = format_context(self.context);
 		let mut label = format!("{}  {ctx}", self.name);
@@ -148,7 +178,7 @@ impl ModelEntry {
 		// Value: "provider/model_id" — used by resolve_model.
 		let value = format!("{}/{}", self.provider, self.id);
 
-		SelectItem::new(&value, &label).with_description(&desc)
+		FilterableSelectItem { value, label, description: Some(desc), tab_id: self.provider }
 	}
 }
 
@@ -186,8 +216,7 @@ mod tests {
 		assert!(model_role("unknown-model", &settings).is_none());
 	}
 
-	#[test]
-	fn build_items_sorts_roles_first() {
+	fn make_registry() -> rho_ai::ModelRegistry {
 		let mut registry = rho_ai::ModelRegistry::new();
 		registry.register(rho_ai::Model {
 			id:              "claude-sonnet-4-5-20250929".to_owned(),
@@ -237,9 +266,20 @@ mod tests {
 			max_tokens:      4_096,
 			cost:            rho_ai::ModelCost::default(),
 		});
+		registry
+	}
 
+	#[test]
+	fn build_items_sorts_roles_first() {
+		let registry = make_registry();
 		let settings = Settings::default();
-		let items = build_model_items(&registry, &settings, "claude-sonnet-4-5-20250929");
+		let (tabs, items) = build_model_items(&registry, &settings, "claude-sonnet-4-5-20250929");
+
+		// Tabs: All, Anthropic, OpenAI
+		assert_eq!(tabs.len(), 3);
+		assert_eq!(tabs[0].id, "all");
+		assert_eq!(tabs[1].id, "anthropic");
+		assert_eq!(tabs[2].id, "openai");
 
 		// Role-assigned models should come first: DEFAULT, FAST, THINKING.
 		assert!(items[0].label.contains("[DEFAULT]"));
@@ -249,5 +289,26 @@ mod tests {
 		// Non-role model last.
 		assert!(items[3].label.contains("Other Model"));
 		assert!(!items[3].label.contains('*'));
+	}
+
+	#[test]
+	fn build_items_has_correct_tab_ids() {
+		let registry = make_registry();
+		let settings = Settings::default();
+		let (_, items) = build_model_items(&registry, &settings, "claude-sonnet-4-5-20250929");
+
+		// Anthropic models should have tab_id "anthropic"
+		assert_eq!(items[0].tab_id, "anthropic");
+		assert_eq!(items[1].tab_id, "anthropic");
+		assert_eq!(items[2].tab_id, "anthropic");
+		// OpenAI model should have tab_id "openai"
+		assert_eq!(items[3].tab_id, "openai");
+	}
+
+	#[test]
+	fn capitalize_works() {
+		assert_eq!(capitalize("anthropic"), "Anthropic");
+		assert_eq!(capitalize("openai"), "Openai");
+		assert_eq!(capitalize(""), "");
 	}
 }
