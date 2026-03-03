@@ -145,35 +145,30 @@ struct ModelEntry {
 
 impl ModelEntry {
 	fn into_filterable_item(self) -> FilterableSelectItem {
-		// Label: "model-name  200K  [ROLE] *"
-		let ctx = format_context(self.context);
-		let mut label = format!("{}  {ctx}", self.name);
-		if let Some(role) = &self.role {
-			let badge = match role {
-				Role::Default => " [DEFAULT]",
-				Role::Fast => " [FAST]",
-				Role::Thinking => " [THINKING]",
-			};
-			label.push_str(badge);
-		}
+		// Label: short — "model-name *" (fits in SelectList's 30-char label column).
+		let mut label = self.name.clone();
 		if self.is_current {
 			label.push_str(" *");
 		}
 
-		// Description: "provider  capabilities"
-		let mut caps: Vec<&str> = Vec::new();
+		// Description: "provider  200K  [ROLE]  capabilities"
+		let ctx = format_context(self.context);
+		let mut parts: Vec<String> = vec![self.provider.clone(), ctx];
+		if let Some(role) = &self.role {
+			let badge = match role {
+				Role::Default => "[DEFAULT]",
+				Role::Fast => "[FAST]",
+				Role::Thinking => "[THINKING]",
+			};
+			parts.push(badge.to_owned());
+		}
 		if self.reasoning {
-			caps.push("reasoning");
+			parts.push("reasoning".to_owned());
 		}
 		if self.images {
-			caps.push("images");
+			parts.push("images".to_owned());
 		}
-		let caps_str = if caps.is_empty() {
-			String::new()
-		} else {
-			format!("  {}", caps.join("  "))
-		};
-		let desc = format!("{}{caps_str}", self.provider);
+		let desc = parts.join("  ");
 
 		// Value: "provider/model_id" — used by resolve_model.
 		let value = format!("{}/{}", self.provider, self.id);
@@ -282,10 +277,23 @@ mod tests {
 		assert_eq!(tabs[2].id, "openai");
 
 		// Role-assigned models should come first: DEFAULT, FAST, THINKING.
-		assert!(items[0].label.contains("[DEFAULT]"));
-		assert!(items[0].label.contains("*")); // current model
-		assert!(items[1].label.contains("[FAST]"));
-		assert!(items[2].label.contains("[THINKING]"));
+		// Badges are in description, current marker (*) is in label.
+		assert!(
+			items[0]
+				.description
+				.as_deref()
+				.unwrap()
+				.contains("[DEFAULT]")
+		);
+		assert!(items[0].label.contains('*')); // current model
+		assert!(items[1].description.as_deref().unwrap().contains("[FAST]"));
+		assert!(
+			items[2]
+				.description
+				.as_deref()
+				.unwrap()
+				.contains("[THINKING]")
+		);
 		// Non-role model last.
 		assert!(items[3].label.contains("Other Model"));
 		assert!(!items[3].label.contains('*'));
