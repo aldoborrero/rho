@@ -212,15 +212,16 @@ fn apply_model_change(
 ) {
 	match crate::models_config::resolve_model(name, registry, settings, models_config) {
 		Ok(resolved) => {
-			let old_id = model.id.clone();
 			*model = resolved.model;
 			*api_key = resolved.api_key;
 			app.status.set_model(&model.id);
 			app.update_status_border(terminal.columns());
-			show_chat_message(app, &format!("Model changed: {old_id} → {}", model.id));
+			app.chat
+				.show_status(&format!("Default model: {}", model.id));
 		},
 		Err(e) => {
-			show_chat_message(app, &format!("Failed to switch model: {e}"));
+			app.chat
+				.show_status(&format!("Failed to switch model: {e}"));
 		},
 	}
 }

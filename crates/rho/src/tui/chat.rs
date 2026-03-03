@@ -40,38 +40,41 @@ struct BangOutput {
 enum ChatItem {
 	Message(Message),
 	Bang(BangOutput),
+	/// Ephemeral dimmed status line (e.g. "Default model: claude-opus-4-6").
+	/// Not part of session history — purely for UI feedback.
+	Status(String),
 }
 
 /// Renders the conversation history as styled ANSI lines.
 pub struct ChatComponent {
-	items:              Vec<ChatItem>,
+	items:                 Vec<ChatItem>,
 	/// Currently streaming text (appended to display but not yet committed).
-	streaming_text:     String,
+	streaming_text:        String,
 	/// Currently streaming thinking text.
-	streaming_thinking: String,
+	streaming_thinking:    String,
 	/// Whether we are currently streaming.
-	is_streaming:       bool,
+	is_streaming:          bool,
 	/// Scroll offset (lines from bottom).
-	scroll_offset:      usize,
+	scroll_offset:         usize,
 	/// Theme for consistent styling.
-	theme:              Rc<Theme>,
+	theme:                 Rc<Theme>,
 	/// Symbol theme for markdown rendering.
-	symbols:            SymbolTheme,
+	symbols:               SymbolTheme,
 	/// Whether tool output blocks are expanded (Ctrl+O toggle).
-	tools_expanded:     bool,
+	tools_expanded:        bool,
 	/// Side-table cache for rendered tool results, keyed by `tool_use_id`.
 	/// Wrapped in `RefCell` so `render_tool_result` can take `&self` and
 	/// avoid a borrow conflict with the immutable `self.items` iteration in
 	/// `Component::render`.
-	render_cache:       RefCell<HashMap<String, CachedRender>>,
+	render_cache:          RefCell<HashMap<String, CachedRender>>,
 	/// Cache: `tool_use_id` -> `tool_name`, populated in `add_message()`.
-	tool_name_cache:    HashMap<String, String>,
+	tool_name_cache:       HashMap<String, String>,
 	/// Animated spinner for loading states.
-	loader:             Loader,
+	loader:                Loader,
 	/// Currently executing tool name (for spinner message).
-	tool_executing:     Option<String>,
+	tool_executing:        Option<String>,
 	/// Currently streaming bang output (in-progress command).
-	streaming_bang:     Option<BangOutput>,
+	streaming_bang:        Option<BangOutput>,
 	/// Accumulated streaming output from a running tool (for spinner updates).
 	streaming_tool_output: String,
 }
@@ -127,6 +130,17 @@ impl ChatComponent {
 			output: output.to_owned(),
 			is_error,
 		}));
+	}
+
+	/// Show a dimmed status message in the chat area.
+	///
+	/// If the last item is already a status message, it is replaced in-place
+	/// (avoids spamming consecutive status lines, matching oh-my-pi).
+	pub fn show_status(&mut self, text: &str) {
+		if matches!(self.items.last(), Some(ChatItem::Status(_))) {
+			self.items.pop();
+		}
+		self.items.push(ChatItem::Status(text.to_owned()));
 	}
 
 	/// Start a streaming bang command output block.
@@ -285,7 +299,11 @@ impl ChatComponent {
 	pub fn append_tool_output(&mut self, chunk: &str) {
 		self.streaming_tool_output.push_str(chunk);
 		if let Some(line) = chunk.lines().last().filter(|l| !l.is_empty()) {
-			let truncated = if line.len() > 60 { &line[..line.floor_char_boundary(60)] } else { line };
+			let truncated = if line.len() > 60 {
+				&line[..line.floor_char_boundary(60)]
+			} else {
+				line
+			};
 			self.loader.set_message(&format!("  {truncated}"));
 		}
 	}
@@ -438,10 +456,14 @@ impl ChatComponent {
 			renderer.render_combined(&args, &display, self.tools_expanded, &self.theme, width);
 
 		// Store in cache
-		self.render_cache.borrow_mut().insert(
-			msg.tool_use_id.clone(),
-			CachedRender { expanded: self.tools_expanded, width, lines: lines.clone() },
-		);
+		self
+			.render_cache
+			.borrow_mut()
+			.insert(msg.tool_use_id.clone(), CachedRender {
+				expanded: self.tools_expanded,
+				width,
+				lines: lines.clone(),
+			});
 
 		lines
 	}
@@ -596,6 +618,11 @@ impl Component for ChatComponent {
 				},
 				ChatItem::Bang(bang) => {
 					lines.extend(self.render_bang_output(bang, width));
+					i += 1;
+				},
+				ChatItem::Status(text) => {
+					lines.push(String::new());
+					lines.push(format!("  {}", self.theme.fg(ThemeColor::Dim, text)));
 					i += 1;
 				},
 			}
