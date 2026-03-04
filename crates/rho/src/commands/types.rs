@@ -22,6 +22,8 @@ pub enum CommandResult {
 	ModelChange(String),
 	/// Settings were changed on disk; event loop should reload.
 	SettingsChanged,
+	/// Open the interactive model selector overlay.
+	ShowModelSelector,
 	/// No visible output (e.g., clipboard operation already done).
 	Silent,
 }

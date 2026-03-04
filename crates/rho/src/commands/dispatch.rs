@@ -151,7 +151,7 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn execute_model_no_args_shows_current() {
+	async fn execute_model_no_args_shows_selector() {
 		let session = SessionManager::in_memory();
 		let settings = test_settings();
 		let tools = ToolRegistry::new();
@@ -164,12 +164,10 @@ mod tests {
 			tools:    &tools,
 		};
 		let result = execute_command(&ctx).await.unwrap();
-		match result {
-			CommandResult::Message(text) => {
-				assert!(text.contains("claude-sonnet-4-5-20250929"));
-			},
-			_ => panic!("Expected CommandResult::Message"),
-		}
+		assert!(
+			matches!(result, CommandResult::ShowModelSelector),
+			"Expected CommandResult::ShowModelSelector"
+		);
 	}
 
 	#[tokio::test]
