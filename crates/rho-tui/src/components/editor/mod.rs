@@ -867,7 +867,11 @@ impl Editor {
 			cb("");
 		}
 
-		if trimmed.is_empty() { None } else { Some(result) }
+		if trimmed.is_empty() {
+			None
+		} else {
+			Some(result)
+		}
 	}
 
 	// ── Kitty CSI-u decoding ────────────────────────────────────────
@@ -1286,7 +1290,9 @@ impl Component for Editor {
 				} else {
 					self.cancel_autocomplete(false);
 				}
-				if !self.disable_submit && let Some(text) = self.submit_value() {
+				if !self.disable_submit
+					&& let Some(text) = self.submit_value()
+				{
 					return InputResult::Submit(text);
 				}
 				return InputResult::Consumed;
@@ -1374,7 +1380,9 @@ impl Component for Editor {
 			|| crate::keys::match_key::matches_key(data.as_bytes(), "return", false)
 			|| data == "\n"
 		{
-			if !self.disable_submit && let Some(text) = self.submit_value() {
+			if !self.disable_submit
+				&& let Some(text) = self.submit_value()
+			{
 				return InputResult::Submit(text);
 			}
 		}
@@ -1550,7 +1558,6 @@ impl Editor {
 		}
 		false
 	}
-
 }
 
 #[cfg(test)]
@@ -1596,11 +1603,7 @@ mod tests {
 				tee_right:    "├",
 				cross:        "┼",
 			},
-			tree:           symbols::TreeSymbols {
-				branch:   "├─",
-				last:     "╰─",
-				vertical: "│",
-			},
+			tree:           symbols::TreeSymbols { branch: "├─", last: "╰─", vertical: "│" },
 			quote_border:   "│",
 			hr_char:        "─",
 			spinner_frames: &["⠋"],

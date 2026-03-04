@@ -3,8 +3,7 @@
 //! Also handles resolving model names to concrete `rho_ai::Model` instances,
 //! including role-based lookup ("default", "smol", "slow").
 
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::{collections::HashMap, path::PathBuf};
 
 use anyhow::{Result, bail};
 use serde::Deserialize;
@@ -98,7 +97,8 @@ fn models_config_path() -> Option<PathBuf> {
 	dirs::home_dir().map(|h| h.join(".rho").join("models.toml"))
 }
 
-/// Load `~/.rho/models.toml`. Returns an empty config if the file doesn't exist.
+/// Load `~/.rho/models.toml`. Returns an empty config if the file doesn't
+/// exist.
 pub fn load_models_config() -> Result<ModelsConfig> {
 	let Some(path) = models_config_path() else {
 		return Ok(ModelsConfig::default());
@@ -112,7 +112,8 @@ pub fn load_models_config() -> Result<ModelsConfig> {
 }
 
 /// If the raw string looks like an env var name (all uppercase + underscores +
-/// digits), try to resolve it from the environment. Otherwise return as literal.
+/// digits), try to resolve it from the environment. Otherwise return as
+/// literal.
 fn resolve_provider_api_key(raw: &str) -> Option<String> {
 	let is_env_var_name = !raw.is_empty()
 		&& raw
@@ -218,24 +219,28 @@ pub fn build_registry(config: &ModelsConfig, settings: &Settings) -> rho_ai::Mod
 			continue;
 		};
 		for model_def in &provider.models {
-			let cost = model_def.cost.as_ref().map_or_else(rho_ai::ModelCost::default, |c| {
-				rho_ai::ModelCost {
+			let cost = model_def
+				.cost
+				.as_ref()
+				.map_or_else(rho_ai::ModelCost::default, |c| rho_ai::ModelCost {
 					input_per_mtok:       c.input,
 					output_per_mtok:      c.output,
 					cache_read_per_mtok:  c.cache_read,
 					cache_write_per_mtok: c.cache_write,
-				}
-			});
+				});
 			registry.register(rho_ai::Model {
-				id:              model_def.id.clone(),
-				name:            model_def.name.clone().unwrap_or_else(|| model_def.id.clone()),
-				provider:        provider_name.clone(),
+				id: model_def.id.clone(),
+				name: model_def
+					.name
+					.clone()
+					.unwrap_or_else(|| model_def.id.clone()),
+				provider: provider_name.clone(),
 				api,
-				base_url:        provider.base_url.clone(),
-				reasoning:       model_def.reasoning,
+				base_url: provider.base_url.clone(),
+				reasoning: model_def.reasoning,
 				supports_images: model_def.supports_images,
-				context_window:  model_def.context_window,
-				max_tokens:      model_def.max_tokens,
+				context_window: model_def.context_window,
+				max_tokens: model_def.max_tokens,
 				cost,
 			});
 		}
@@ -340,7 +345,7 @@ mod tests {
 
 	fn test_settings() -> Settings {
 		Settings {
-			api_key:  "test-key".to_owned(),
+			api_key: "test-key".to_owned(),
 			base_url: "https://api.anthropic.com".to_owned(),
 			..Settings::default()
 		}
@@ -352,33 +357,38 @@ mod tests {
 		let settings = test_settings();
 		let registry = build_registry(&config, &settings);
 
-		assert!(registry.get("anthropic", "claude-sonnet-4-5-20250929").is_some());
-		assert!(registry.get("anthropic", "claude-haiku-4-5-20251001").is_some());
+		assert!(
+			registry
+				.get("anthropic", "claude-sonnet-4-5-20250929")
+				.is_some()
+		);
+		assert!(
+			registry
+				.get("anthropic", "claude-haiku-4-5-20251001")
+				.is_some()
+		);
 		assert!(registry.get("anthropic", "claude-opus-4-6").is_some());
 	}
 
 	#[test]
 	fn build_registry_with_custom_provider() {
 		let mut providers = HashMap::new();
-		providers.insert(
-			"ollama".to_owned(),
-			ProviderConfig {
-				base_url: "http://localhost:11434".to_owned(),
-				api_key:  None,
-				api:      "openai-completions".to_owned(),
-				auth:     AuthMode::None,
-				headers:  HashMap::new(),
-				models:   vec![ModelDef {
-					id:              "llama3".to_owned(),
-					name:            Some("Llama 3".to_owned()),
-					reasoning:       false,
-					supports_images: false,
-					context_window:  8192,
-					max_tokens:      4096,
-					cost:            None,
-				}],
-			},
-		);
+		providers.insert("ollama".to_owned(), ProviderConfig {
+			base_url: "http://localhost:11434".to_owned(),
+			api_key:  None,
+			api:      "openai-completions".to_owned(),
+			auth:     AuthMode::None,
+			headers:  HashMap::new(),
+			models:   vec![ModelDef {
+				id:              "llama3".to_owned(),
+				name:            Some("Llama 3".to_owned()),
+				reasoning:       false,
+				supports_images: false,
+				context_window:  8192,
+				max_tokens:      4096,
+				cost:            None,
+			}],
+		});
 		let config = ModelsConfig { providers };
 		let settings = test_settings();
 		let registry = build_registry(&config, &settings);
@@ -411,8 +421,7 @@ mod tests {
 		let settings = test_settings();
 		let registry = build_registry(&config, &settings);
 
-		let resolved =
-			resolve_model("claude-opus-4-6", &registry, &settings, &config).unwrap();
+		let resolved = resolve_model("claude-opus-4-6", &registry, &settings, &config).unwrap();
 		assert_eq!(resolved.model.id, "claude-opus-4-6");
 	}
 
@@ -422,13 +431,9 @@ mod tests {
 		let settings = test_settings();
 		let registry = build_registry(&config, &settings);
 
-		let resolved = resolve_model(
-			"anthropic/claude-sonnet-4-5-20250929",
-			&registry,
-			&settings,
-			&config,
-		)
-		.unwrap();
+		let resolved =
+			resolve_model("anthropic/claude-sonnet-4-5-20250929", &registry, &settings, &config)
+				.unwrap();
 		assert_eq!(resolved.model.id, "claude-sonnet-4-5-20250929");
 	}
 
@@ -463,10 +468,7 @@ mod tests {
 
 	#[test]
 	fn resolve_provider_api_key_literal() {
-		assert_eq!(
-			resolve_provider_api_key("sk-literal-key"),
-			Some("sk-literal-key".to_owned())
-		);
+		assert_eq!(resolve_provider_api_key("sk-literal-key"), Some("sk-literal-key".to_owned()));
 	}
 
 	#[test]

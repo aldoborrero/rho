@@ -455,15 +455,15 @@ impl SessionManager {
 		let id = snowflake::generate_entry_id(&self.entry_ids);
 		let entry = SessionEntry::Compaction(CompactionEntry {
 			id,
-			parent_id:           self.leaf_id.clone(),
-			timestamp:           now,
-			summary:             summary.to_owned(),
-			short_summary:       short_summary.map(|s| s.to_owned()),
+			parent_id: self.leaf_id.clone(),
+			timestamp: now,
+			summary: summary.to_owned(),
+			short_summary: short_summary.map(|s| s.to_owned()),
 			first_kept_entry_id: first_kept_entry_id.to_owned(),
 			tokens_before,
 			details,
-			preserve_data:       None,
-			from_extension:      None,
+			preserve_data: None,
+			from_extension: None,
 		});
 		self.append_entry(entry)?;
 		self.rebuild_messages_cache();
@@ -898,10 +898,7 @@ impl SessionManager {
 		};
 
 		// Collect remaining non-empty lines.
-		let remaining: Vec<&str> = lines
-			.map(|l| l.trim())
-			.filter(|l| !l.is_empty())
-			.collect();
+		let remaining: Vec<&str> = lines.map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
 
 		let mut entries = Vec::new();
 		let last_idx = remaining.len().saturating_sub(1);
@@ -912,8 +909,8 @@ impl SessionManager {
 				Ok(FileEntry::Header(_)) => bail!("Unexpected second header in session file"),
 				Err(e) if i == last_idx && !remaining.is_empty() => {
 					eprintln!(
-						"Warning: skipping malformed last entry in session file \
-						 (possible partial write): {e}"
+						"Warning: skipping malformed last entry in session file (possible partial \
+						 write): {e}"
 					);
 				},
 				Err(e) => return Err(e.into()),

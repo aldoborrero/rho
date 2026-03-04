@@ -41,7 +41,9 @@ pub fn render_file_operations(read_files: &[String], modified_files: &[String]) 
 	let mut env = Environment::new();
 	env.add_template("file-operations", FILE_OPERATIONS_TEMPLATE)
 		.expect("file-operations template is valid");
-	let tmpl = env.get_template("file-operations").expect("template registered above");
+	let tmpl = env
+		.get_template("file-operations")
+		.expect("template registered above");
 	let ctx = FileOpsContext {
 		read_files:     read_files.to_vec(),
 		modified_files: modified_files.to_vec(),
@@ -54,8 +56,12 @@ pub fn render_summary_context(summary: &str) -> String {
 	let mut env = Environment::new();
 	env.add_template("summary-context", SUMMARY_CONTEXT)
 		.expect("summary-context template is valid");
-	let tmpl = env.get_template("summary-context").expect("template registered above");
-	tmpl.render(minijinja::context! { summary => summary }).unwrap_or_default()
+	let tmpl = env
+		.get_template("summary-context")
+		.expect("template registered above");
+	tmpl
+		.render(minijinja::context! { summary => summary })
+		.unwrap_or_default()
 }
 
 #[cfg(test)]

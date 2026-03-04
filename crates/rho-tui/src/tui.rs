@@ -113,7 +113,9 @@ impl Tui {
 		options: OverlayOptions,
 	) -> OverlayHandle {
 		let index = self.overlay_stack.len();
-		self.overlay_stack.push(OverlayEntry { component, options, hidden: false });
+		self
+			.overlay_stack
+			.push(OverlayEntry { component, options, hidden: false });
 		self.render_needed = true;
 
 		OverlayHandle { index }
@@ -362,7 +364,11 @@ impl Tui {
 			}
 		}
 
-		if current.is_empty() { None } else { Some(current) }
+		if current.is_empty() {
+			None
+		} else {
+			Some(current)
+		}
 	}
 
 	/// Core differential rendering.

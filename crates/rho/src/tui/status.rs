@@ -292,8 +292,9 @@ fn format_duration(d: Duration) -> Option<String> {
 }
 
 /// Abbreviate a path to at most `max_width` visible columns.
-/// If truncation is needed, the path is prefixed with "\u{2026}" (U+2026, 1 column wide).
-/// Uses `visible_width_str` so CJK / emoji / wide characters are measured correctly.
+/// If truncation is needed, the path is prefixed with "\u{2026}" (U+2026, 1
+/// column wide). Uses `visible_width_str` so CJK / emoji / wide characters are
+/// measured correctly.
 fn abbreviate_path(path: &str, max_width: usize) -> String {
 	let width = rho_text::width::visible_width_str(path);
 	if width <= max_width {
@@ -483,10 +484,7 @@ mod tests {
 		let result = abbreviate_path(path, 40);
 		assert!(result.starts_with('\u{2026}')); // …
 		let width = rho_text::width::visible_width_str(&result);
-		assert!(
-			width <= 40,
-			"Expected width <= 40, got {width} for '{result}'"
-		);
+		assert!(width <= 40, "Expected width <= 40, got {width} for '{result}'");
 	}
 
 	#[test]
@@ -497,10 +495,7 @@ mod tests {
 		// With max_len=12, char-based would not truncate, but width-based should.
 		let result = abbreviate_path(path, 12);
 		let width = rho_text::width::visible_width_str(&result);
-		assert!(
-			width <= 12,
-			"Expected width <= 12, got {width} for '{result}'"
-		);
+		assert!(width <= 12, "Expected width <= 12, got {width} for '{result}'");
 	}
 
 	// ── Width calculation ──────────────────────────────────────────

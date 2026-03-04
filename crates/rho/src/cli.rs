@@ -7,7 +7,8 @@ pub struct Cli {
 	#[arg(trailing_var_arg = true)]
 	pub message: Vec<String>,
 
-	/// Model name or role (e.g., claude-sonnet-4-5-20250929, default, smol, slow)
+	/// Model name or role (e.g., claude-sonnet-4-5-20250929, default, smol,
+	/// slow)
 	#[arg(short, long)]
 	pub model: Option<String>,
 

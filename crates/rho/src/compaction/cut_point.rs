@@ -4,8 +4,7 @@
 //! `findValidCutPoints()` lines 273-308
 
 use super::tokens::estimate_entry_tokens;
-use crate::ai::types::Message;
-use crate::session::types::SessionEntry;
+use crate::{ai::types::Message, session::types::SessionEntry};
 
 /// Result of finding where to split the conversation for compaction.
 pub struct CutPointResult {
@@ -84,8 +83,10 @@ pub fn find_cut_point(
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::ai::types::{AssistantMessage, ContentBlock, UserMessage};
-	use crate::session::types::SessionMessageEntry;
+	use crate::{
+		ai::types::{AssistantMessage, ContentBlock, UserMessage},
+		session::types::SessionMessageEntry,
+	};
 
 	fn ts() -> String {
 		"2026-01-01T00:00:00Z".to_owned()

@@ -25,11 +25,8 @@ pub struct FileOperations {
 /// Scans for `ToolUse` blocks with read/write/edit tool names and extracts
 /// the `"path"` or `"file_path"` argument.
 pub fn extract_file_ops(messages: &[Message]) -> FileOperations {
-	let mut ops = FileOperations {
-		read:    HashSet::new(),
-		written: HashSet::new(),
-		edited:  HashSet::new(),
-	};
+	let mut ops =
+		FileOperations { read: HashSet::new(), written: HashSet::new(), edited: HashSet::new() };
 
 	for message in messages {
 		if let Message::Assistant(a) = message {

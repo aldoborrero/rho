@@ -77,9 +77,9 @@ fn serialize_assistant(output: &mut String, msg: &AssistantMessage) {
 
 #[cfg(test)]
 mod tests {
-	use super::*;
 	use std::sync::Arc;
 
+	use super::*;
 	use crate::ai::types::{ToolResultMessage, UserMessage};
 
 	#[test]

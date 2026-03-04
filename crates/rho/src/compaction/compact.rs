@@ -15,25 +15,24 @@ use super::{
 use crate::{
 	ai::types::Message,
 	prompts::compaction::{
-		SUMMARIZATION_SYSTEM, SUMMARY_PROMPT, SHORT_SUMMARY_PROMPT, UPDATE_SUMMARY_PROMPT,
+		SHORT_SUMMARY_PROMPT, SUMMARIZATION_SYSTEM, SUMMARY_PROMPT, UPDATE_SUMMARY_PROMPT,
 		render_file_operations,
 	},
-	session::SessionManager,
-	session::types::SessionEntry,
+	session::{SessionManager, types::SessionEntry},
 };
 
 /// Result of a compaction operation.
 pub struct CompactionResult {
 	/// The full structured summary.
-	pub summary:              String,
+	pub summary:             String,
 	/// Short PR-style summary (2-3 sentences).
-	pub short_summary:        Option<String>,
+	pub short_summary:       Option<String>,
 	/// ID of the first session entry that was kept (not summarized).
-	pub first_kept_entry_id:  String,
+	pub first_kept_entry_id: String,
 	/// Estimated total tokens before compaction.
-	pub tokens_before:        u64,
+	pub tokens_before:       u64,
 	/// File operation details (`readFiles`, `modifiedFiles`).
-	pub details:              Option<serde_json::Value>,
+	pub details:             Option<serde_json::Value>,
 }
 
 /// Main compaction orchestrator.
@@ -132,10 +131,9 @@ pub async fn run_compaction(
 	.await?;
 
 	// Generate short summary (best-effort).
-	let short_summary =
-		generate_short_summary(model, &messages_to_summarize, reserve, api_key)
-			.await
-			.ok();
+	let short_summary = generate_short_summary(model, &messages_to_summarize, reserve, api_key)
+		.await
+		.ok();
 
 	// Get the first kept entry ID.
 	let first_kept_entry_id = branch[cut.first_kept_index].id().to_owned();
@@ -213,9 +211,8 @@ async fn generate_short_summary(
 	api_key: &str,
 ) -> Result<String> {
 	let serialized = serialize_conversation(messages);
-	let user_content = format!(
-		"<conversation>\n{serialized}</conversation>\n\n{SHORT_SUMMARY_PROMPT}"
-	);
+	let user_content =
+		format!("<conversation>\n{serialized}</conversation>\n\n{SHORT_SUMMARY_PROMPT}");
 
 	call_summarization_llm(model, &user_content, reserve_tokens.min(1024), api_key).await
 }
@@ -244,7 +241,7 @@ async fn call_summarization_llm(
 	let effective_max = ((f64::from(max_tokens)) * 0.8) as u32;
 
 	let options = rho_ai::StreamOptions {
-		api_key:  Some(api_key.to_owned()),
+		api_key: Some(api_key.to_owned()),
 		max_tokens: Some(effective_max),
 		..Default::default()
 	};
