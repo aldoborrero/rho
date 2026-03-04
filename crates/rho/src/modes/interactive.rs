@@ -816,6 +816,9 @@ pub async fn run_interactive(
 					continue;
 				}
 				match tagged.event {
+					AgentEvent::AgentStart => {
+						// Agent loop starting — no TUI action needed.
+					},
 					AgentEvent::TurnStart { .. } => {
 						if matches!(mode, AppMode::Streaming) {
 							app.status.set_working_phase("Thinking");
@@ -825,6 +828,9 @@ pub async fn run_interactive(
 						if matches!(mode, AppMode::Streaming) {
 							app.chat.append_text(&text);
 						}
+					},
+					AgentEvent::MessageStart => {
+						// Assistant message stream beginning — no TUI action needed.
 					},
 					AgentEvent::ThinkingDelta(text) => {
 						if matches!(mode, AppMode::Streaming) {
@@ -842,9 +848,18 @@ pub async fn run_interactive(
 							app.chat.append_tool_output(&content);
 						}
 					},
-					AgentEvent::ToolCallResult { .. } => {
+					AgentEvent::ToolCallResult { id, content, is_error, .. } => {
 						app.status.set_working_phase("Thinking");
 						app.chat.set_tool_executing(None);
+						let tool_msg =
+							Message::ToolResult(ToolResultMessage { tool_use_id: id, content, is_error });
+						app.chat.add_message(tool_msg.clone());
+						session.append(tool_msg).await?;
+						// Start streaming for next LLM turn.
+						app.chat.start_streaming();
+					},
+					AgentEvent::TurnEnd { .. } => {
+						// Turn completed — no TUI action needed.
 					},
 					AgentEvent::MessageComplete(message) => {
 						if let Some(ref usage) = message.usage {
@@ -852,17 +867,10 @@ pub async fn run_interactive(
 								.set_usage(usage.input_tokens, usage.output_tokens);
 							app.update_status_border(terminal.columns());
 						}
+						let message = Arc::unwrap_or_clone(message);
 						session.append(Message::Assistant(message.clone())).await?;
 						app.chat
 							.finish_streaming_with_message(Message::Assistant(message));
-					},
-					AgentEvent::ToolResultComplete { tool_use_id, content, is_error } => {
-						let tool_msg =
-							Message::ToolResult(ToolResultMessage { tool_use_id, content, is_error });
-						app.chat.add_message(tool_msg.clone());
-						session.append(tool_msg).await?;
-						// Start streaming for next LLM turn.
-						app.chat.start_streaming();
 					},
 					AgentEvent::SteeringProcessed { messages } => {
 						// Agent consumed steering — move from banner to chat.
@@ -881,7 +889,7 @@ pub async fn run_interactive(
 							&format!("Retrying (attempt {attempt}) in {delay_ms}ms: {error}"),
 						);
 					},
-					AgentEvent::Done(outcome) => {
+					AgentEvent::Done { outcome, .. } => {
 						mode = AppMode::Idle;
 						agent_cancel = None;
 						app.chat.finish_streaming();

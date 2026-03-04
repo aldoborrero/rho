@@ -210,7 +210,8 @@ fn bench_json_value_clone(c: &mut Criterion) {
 // ---------------------------------------------------------------------------
 // Hotspot 4: Repeated id.to_owned() per tool call
 //
-// Current: 5x to_owned() of the same tool use ID
+// Current: 5x to_owned() of the same tool use ID + 3x name clone +
+//          2x Arc::clone for content
 // Optimized: 1x allocation, share via Arc<str> or clone from single String
 // ---------------------------------------------------------------------------
 
@@ -219,8 +220,10 @@ fn bench_tool_id_allocations(c: &mut Criterion) {
 
 	let id = "toolu_01JFG4K7Z3HWGQFNBM3KWB11AH";
 
-	// Current: 5 separate to_owned() calls (ToolCallStart, ToolCallResult,
-	// ToolResultComplete, ToolResultMessage, + callback capture)
+	// Current: 5 separate to_owned() calls for tool_use_id (ToolCallStart,
+	// ToolCallResult, TurnEnd tool_results, ToolResultMessage, + callback
+	// capture), plus 3 name clones (ToolCallStart, ToolCallResult, callback)
+	// and 2 Arc::clone for content (ToolCallResult, TurnEnd tool_results)
 	group.bench_function("current_5x_to_owned", |b| {
 		b.iter(|| {
 			let id = std::hint::black_box(id);
