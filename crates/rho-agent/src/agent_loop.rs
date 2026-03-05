@@ -8,6 +8,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
 	convert,
 	events::{AgentEvent, AgentOutcome},
+	hooks::{AgentHooks, ToolCallAction},
 	registry::ToolRegistry,
 	tools::{Concurrency, MessageFetcher, OnToolUpdate},
 	types::{ContentBlock, Message, ToolResultMessage, Usage},
@@ -74,6 +75,7 @@ pub async fn run_agent_loop(
 	messages: &mut Vec<Message>,
 	tools: &ToolRegistry,
 	config: AgentConfig,
+	hooks: Option<Arc<dyn AgentHooks>>,
 	event_tx: mpsc::Sender<AgentEvent>,
 ) -> AgentOutcome {
 	let mut turn: u32 = 0;
@@ -147,12 +149,36 @@ pub async fn run_agent_loop(
 			turn += 1;
 			let _ = event_tx.send(AgentEvent::TurnStart { turn }).await;
 
+			// Hook: before_context — let extensions inject messages or append
+			// to the system prompt for this turn.
+			let mut turn_system_prompt = config.system_prompt.clone();
+			if let Some(ref hooks) = hooks {
+				match hooks.before_context(messages).await {
+					Ok(Some(modification)) => {
+						if let Some(append) = modification.append_system_prompt {
+							let mut sp = (*turn_system_prompt).clone();
+							sp.push_str("\n\n");
+							sp.push_str(&append);
+							turn_system_prompt = Arc::new(sp);
+						}
+						for msg in &modification.inject_messages {
+							convert::push_ai_message(&mut ai_messages, msg);
+							messages.push(msg.clone());
+						}
+					},
+					Ok(None) => {},
+					Err(e) => {
+						eprintln!("[hook] before_context error (fail-open): {e}");
+					},
+				}
+			}
+
 			// Build context by temporarily swapping the cached vecs in (zero
 			// allocation). `rho_ai::stream` serialises the context into the HTTP
 			// request body immediately; the returned `AssistantMessageStream`
 			// (an mpsc receiver) does not borrow it.
 			let mut context = rho_ai::types::Context {
-				system_prompt: Some(config.system_prompt.clone()),
+				system_prompt: Some(turn_system_prompt),
 				messages:      std::mem::take(&mut ai_messages),
 				tools:         std::mem::take(&mut ai_tools),
 			};
@@ -322,6 +348,7 @@ pub async fn run_agent_loop(
 					&cancel,
 					&event_tx,
 					config.steering_fetcher.as_ref(),
+					hooks.as_deref(),
 				)
 				.await;
 
@@ -456,6 +483,7 @@ async fn execute_tool_calls(
 	cancel: &CancellationToken,
 	event_tx: &mpsc::Sender<AgentEvent>,
 	steering_fetcher: Option<&MessageFetcher>,
+	hooks: Option<&dyn AgentHooks>,
 ) -> ToolExecutionOutcome {
 	let mut results: Vec<Option<(Arc<String>, bool)>> = vec![None; tool_uses.len()];
 	let mut pending_shared: Vec<(usize, &str, &str, &serde_json::Value)> = Vec::new();
@@ -476,7 +504,7 @@ async fn execute_tool_calls(
 			// Barrier: flush all pending shared tools first.
 			if !pending_shared.is_empty() {
 				let batch = std::mem::take(&mut pending_shared);
-				if flush_shared_batch(&batch, tools, cwd, cancel, event_tx, &mut results).await {
+				if flush_shared_batch(&batch, tools, cwd, cancel, event_tx, &mut results, hooks).await {
 					cancelled = true;
 					break;
 				}
@@ -489,10 +517,33 @@ async fn execute_tool_calls(
 				break;
 			}
 
+			// Hook: before_tool_call — may block or modify input.
+			let effective_input: Arc<serde_json::Value>;
+			if let Some(h) = hooks {
+				match h.before_tool_call(name, id, input).await {
+					Ok(ToolCallAction::Block { reason }) => {
+						results[batch_idx] = Some((Arc::new(reason), true));
+						continue;
+					},
+					Ok(ToolCallAction::ModifyInput { input: modified }) => {
+						effective_input = Arc::new(modified);
+					},
+					Ok(ToolCallAction::Continue) => {
+						effective_input = Arc::clone(input);
+					},
+					Err(e) => {
+						eprintln!("[hook] before_tool_call error (fail-open): {e}");
+						effective_input = Arc::clone(input);
+					},
+				}
+			} else {
+				effective_input = Arc::clone(input);
+			}
+
 			// Execute exclusive tool alone, raced against cancellation.
 			let cb = make_update_callback(event_tx, id, name);
-			let result = tokio::select! {
-				result = tools.execute(name, input, cwd, cancel, Some(&cb)) => {
+			let mut result = tokio::select! {
+				result = tools.execute(name, &effective_input, cwd, cancel, Some(&cb)) => {
 					wrap_tool_result(result)
 				}
 				() = cancel.cancelled() => {
@@ -500,6 +551,24 @@ async fn execute_tool_calls(
 					break;
 				}
 			};
+
+			// Hook: after_tool_call — may modify result content/is_error.
+			if let Some(h) = hooks {
+				match h.after_tool_call(name, id, &result.0, result.1).await {
+					Ok(Some(modification)) => {
+						if let Some(content) = modification.content {
+							result.0 = Arc::new(content);
+						}
+						if let Some(is_error) = modification.is_error {
+							result.1 = is_error;
+						}
+					},
+					Ok(None) => {},
+					Err(e) => {
+						eprintln!("[hook] after_tool_call error (fail-open): {e}");
+					},
+				}
+			}
 			results[batch_idx] = Some(result);
 		}
 	}
@@ -510,7 +579,7 @@ async fn execute_tool_calls(
 		let msgs = drain_messages(steering_fetcher);
 		if msgs.is_empty() {
 			let batch = std::mem::take(&mut pending_shared);
-			if flush_shared_batch(&batch, tools, cwd, cancel, event_tx, &mut results).await {
+			if flush_shared_batch(&batch, tools, cwd, cancel, event_tx, &mut results, hooks).await {
 				cancelled = true;
 			}
 		} else {
@@ -540,19 +609,80 @@ async fn flush_shared_batch(
 	cancel: &CancellationToken,
 	event_tx: &mpsc::Sender<AgentEvent>,
 	results: &mut [Option<(Arc<String>, bool)>],
+	hooks: Option<&dyn AgentHooks>,
 ) -> bool {
-	let callbacks: Vec<OnToolUpdate> = batch
+	// Hook: before_tool_call for each tool in the batch.
+	// Blocked tools get their result set immediately and are excluded from
+	// execution. Modified inputs replace the original.
+	let mut effective_inputs: Vec<Option<serde_json::Value>> = Vec::with_capacity(batch.len());
+	for &(bi, tid, tname, inp) in batch {
+		if let Some(h) = hooks {
+			match h.before_tool_call(tname, tid, inp).await {
+				Ok(ToolCallAction::Block { reason }) => {
+					results[bi] = Some((Arc::new(reason), true));
+					effective_inputs.push(None); // marker: skip
+				},
+				Ok(ToolCallAction::ModifyInput { input: modified }) => {
+					effective_inputs.push(Some(modified));
+				},
+				Ok(ToolCallAction::Continue) => {
+					effective_inputs.push(Some(inp.clone()));
+				},
+				Err(e) => {
+					eprintln!("[hook] before_tool_call error (fail-open): {e}");
+					effective_inputs.push(Some(inp.clone()));
+				},
+			}
+		} else {
+			effective_inputs.push(Some(inp.clone()));
+		}
+	}
+
+	// Collect non-blocked tools for parallel execution.
+	let live: Vec<(usize, usize, &str, &str)> = batch
 		.iter()
-		.map(|&(_, tid, tname, ..)| make_update_callback(event_tx, tid, tname))
+		.enumerate()
+		.filter(|(ei, _)| effective_inputs[*ei].is_some())
+		.map(|(ei, &(bi, tid, tname, _))| (ei, bi, tid, tname))
 		.collect();
-	let futures = batch
+
+	if live.is_empty() {
+		return false;
+	}
+
+	let callbacks: Vec<OnToolUpdate> = live
+		.iter()
+		.map(|&(_, _, tid, tname)| make_update_callback(event_tx, tid, tname))
+		.collect();
+	let futures = live
 		.iter()
 		.zip(callbacks.iter())
-		.map(|(&(_, _, n, inp), cb)| tools.execute(n, inp, cwd, cancel, Some(cb)));
+		.map(|(&(ei, _, _, tname), cb)| {
+			let inp = effective_inputs[ei].as_ref().unwrap();
+			tools.execute(tname, inp, cwd, cancel, Some(cb))
+		});
 	tokio::select! {
 		batch_results = join_all(futures) => {
-			for (&(bi, ..), result) in batch.iter().zip(batch_results) {
-				results[bi] = Some(wrap_tool_result(result));
+			for (&(_, bi, tid, tname), raw) in live.iter().zip(batch_results) {
+				let mut result = wrap_tool_result(raw);
+				// Hook: after_tool_call.
+				if let Some(h) = hooks {
+					match h.after_tool_call(tname, tid, &result.0, result.1).await {
+						Ok(Some(modification)) => {
+							if let Some(content) = modification.content {
+								result.0 = Arc::new(content);
+							}
+							if let Some(is_error) = modification.is_error {
+								result.1 = is_error;
+							}
+						},
+						Ok(None) => {},
+						Err(e) => {
+							eprintln!("[hook] after_tool_call error (fail-open): {e}");
+						},
+					}
+				}
+				results[bi] = Some(result);
 			}
 			false
 		}
@@ -819,6 +949,7 @@ mod tests {
 			&cancel,
 			&event_tx,
 			Some(&fetcher),
+			None,
 		)
 		.await;
 
@@ -864,6 +995,7 @@ mod tests {
 			&cancel,
 			&event_tx,
 			Some(&fetcher),
+			None,
 		)
 		.await;
 
@@ -904,6 +1036,7 @@ mod tests {
 			&cancel,
 			&event_tx,
 			Some(&fetcher),
+			None,
 		)
 		.await;
 

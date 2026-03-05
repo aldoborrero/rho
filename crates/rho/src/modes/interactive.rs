@@ -127,6 +127,7 @@ const fn to_agent_thinking(level: crate::settings::ThinkingLevel) -> ThinkingLev
 /// The `agent_generation` counter is incremented before spawning so that any
 /// events from a previous agent run are automatically ignored by the event
 /// loop's generation check.
+#[allow(clippy::too_many_arguments, reason = "Agent spawning requires wiring many subsystems")]
 fn spawn_agent(
 	model: &rho_ai::Model,
 	messages: &[Message],
@@ -138,6 +139,7 @@ fn spawn_agent(
 	agent_generation: &mut u64,
 	steering_fetcher: Option<rho_agent::tools::MessageFetcher>,
 	follow_up_fetcher: Option<rho_agent::tools::MessageFetcher>,
+	hooks: Option<Arc<dyn rho_agent::hooks::AgentHooks>>,
 ) -> anyhow::Result<tokio_util::sync::CancellationToken> {
 	*agent_generation += 1;
 	let generation = *agent_generation;
@@ -186,6 +188,7 @@ fn spawn_agent(
 			&mut agent_messages,
 			&agent_tools,
 			agent_config,
+			hooks,
 			agent_tx,
 		)
 		.await;
@@ -365,6 +368,7 @@ pub async fn run_interactive(
 	resolved: ResolvedModel,
 	mut session: SessionManager,
 	tools: ToolRegistry,
+	ext_manager: crate::extensions::ExtensionManager,
 ) -> anyhow::Result<()> {
 	// Load session messages if resuming (now a no-op since open() loads).
 	session.load().await?;
@@ -379,10 +383,22 @@ pub async fn run_interactive(
 	let mut model = resolved.model;
 	let mut api_key = resolved.api_key;
 
-	// Build the system prompt once.
+	// Extract hooks and context from extensions.
+	let ext_hooks = ext_manager.hooks();
+	let ext_context = ext_manager.context_strings();
+
+	// Build the system prompt once, including extension context.
+	let mut append = cli.append_system_prompt.clone();
+	if !ext_context.is_empty() {
+		let ext_text = ext_context.join("\n\n");
+		append = Some(match append {
+			Some(existing) => format!("{existing}\n\n{ext_text}"),
+			None => ext_text,
+		});
+	}
 	let system_prompt = crate::prompts::build(&tools, crate::prompts::BuildOptions {
 		custom_prompt:        cli.system_prompt.clone(),
-		append_system_prompt: cli.append_system_prompt.clone(),
+		append_system_prompt: append,
 		cwd:                  std::env::current_dir()?,
 	})
 	.await?;
@@ -515,6 +531,7 @@ pub async fn run_interactive(
 			&mut agent_generation,
 			sf,
 			ff,
+			ext_hooks.clone(),
 		)?);
 	}
 
@@ -648,7 +665,8 @@ pub async fn run_interactive(
 										model: &model.id,
 										tools: &tools,
 									};
-									let result = crate::commands::execute_command(&ctx).await?;
+									let result =
+										crate::commands::execute_command(&ctx, Some(&ext_manager)).await?;
 									if matches!(
 										apply_command_result(
 											result,
@@ -785,6 +803,7 @@ pub async fn run_interactive(
 											&mut agent_generation,
 											sf,
 											ff,
+											ext_hooks.clone(),
 										)?);
 									}
 								},
