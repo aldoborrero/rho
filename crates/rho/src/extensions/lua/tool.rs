@@ -1,7 +1,7 @@
 use std::{path::Path, sync::Arc};
 
 use mlua::{Function, LuaSerdeExt, RegistryKey, Table};
-use rho_agent::tools::{OnToolUpdate, ToolOutput};
+use rho_agent::tools::{Concurrency, OnToolUpdate, ToolOutput};
 use tokio_util::sync::CancellationToken;
 
 /// A tool backed by a Lua handler function.
@@ -12,6 +12,7 @@ pub struct LuaTool {
 	pub lua:          Arc<std::sync::Mutex<mlua::Lua>>,
 	pub handler_key:  RegistryKey,
 	pub ext_id:       String,
+	pub concurrency:  Concurrency,
 }
 
 #[async_trait::async_trait]
@@ -28,12 +29,16 @@ impl rho_agent::tools::Tool for LuaTool {
 		self.input_schema.clone()
 	}
 
+	fn concurrency(&self) -> Concurrency {
+		self.concurrency
+	}
+
 	async fn execute(
 		&self,
 		input: &serde_json::Value,
 		cwd: &Path,
 		_cancel: &CancellationToken,
-		_on_update: Option<&OnToolUpdate>,
+		on_update: Option<&OnToolUpdate>,
 	) -> anyhow::Result<ToolOutput> {
 		let lua = self
 			.lua
@@ -53,6 +58,22 @@ impl rho_agent::tools::Tool for LuaTool {
 		ctx_table
 			.set("cwd", cwd.to_string_lossy().as_ref())
 			.map_err(|e| anyhow::anyhow!("[ext:{}] failed to set cwd: {e}", self.ext_id))?;
+
+		// Expose ctx.update(text) for streaming output if on_update is provided.
+		if let Some(cb) = on_update {
+			let cb = cb.clone();
+			let update_fn = lua
+				.create_function(move |_, text: String| {
+					cb(&text);
+					Ok(())
+				})
+				.map_err(|e| {
+					anyhow::anyhow!("[ext:{}] failed to create update fn: {e}", self.ext_id)
+				})?;
+			ctx_table.set("update", update_fn).map_err(|e| {
+				anyhow::anyhow!("[ext:{}] failed to set update fn: {e}", self.ext_id)
+			})?;
+		}
 
 		match func.call::<Table>((input_val, ctx_table)) {
 			Ok(result) => {

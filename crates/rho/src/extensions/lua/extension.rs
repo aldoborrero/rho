@@ -68,6 +68,7 @@ impl Extension for LuaExtension {
 					lua:          self.runtime.lua.clone(),
 					handler_key:  new_key,
 					ext_id:       self.manifest.id.clone(),
+					concurrency:  reg.concurrency,
 				}) as Box<dyn Tool>)
 			})
 			.collect()
@@ -123,8 +124,10 @@ impl Extension for LuaExtension {
 	fn hooks(&self) -> Option<Arc<dyn AgentHooks>> {
 		let has_before = self.runtime.registrations.hooks.before_tool_call.is_some();
 		let has_after = self.runtime.registrations.hooks.after_tool_call.is_some();
+		let has_before_ctx = self.runtime.registrations.hooks.before_context.is_some();
+		let has_on_event = self.runtime.registrations.hooks.on_agent_event.is_some();
 
-		if !has_before && !has_after {
+		if !has_before && !has_after && !has_before_ctx && !has_on_event {
 			return None;
 		}
 
@@ -157,9 +160,38 @@ impl Extension for LuaExtension {
 			None
 		};
 
+		let before_ctx_key = if let Some(ref key) = self.runtime.registrations.hooks.before_context
+		{
+			match Self::dup_registry_key(&lua_guard, key) {
+				Ok(k) => Some(k),
+				Err(e) => {
+					eprintln!("[ext:{}] failed to dup before_context key: {e}", self.manifest.id);
+					None
+				},
+			}
+		} else {
+			None
+		};
+
+		let on_event_key = if let Some(ref key) = self.runtime.registrations.hooks.on_agent_event {
+			match Self::dup_registry_key(&lua_guard, key) {
+				Ok(k) => Some(k),
+				Err(e) => {
+					eprintln!("[ext:{}] failed to dup on_agent_event key: {e}", self.manifest.id);
+					None
+				},
+			}
+		} else {
+			None
+		};
+
 		drop(lua_guard);
 
-		if before_key.is_none() && after_key.is_none() {
+		if before_key.is_none()
+			&& after_key.is_none()
+			&& before_ctx_key.is_none()
+			&& on_event_key.is_none()
+		{
 			return None;
 		}
 
@@ -167,6 +199,8 @@ impl Extension for LuaExtension {
 			lua:                  self.runtime.lua.clone(),
 			before_tool_call_key: before_key,
 			after_tool_call_key:  after_key,
+			before_context_key:   before_ctx_key,
+			on_agent_event_key:   on_event_key,
 			ext_id:               self.manifest.id.clone(),
 		}))
 	}

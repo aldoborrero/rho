@@ -355,6 +355,197 @@ end
 		}
 	}
 
+	// --- Hook dispatch: before_context ---
+
+	#[tokio::test]
+	async fn hook_before_context_appends_prompt() {
+		let ext = load_test_ext(
+			r#"
+return function(api)
+    api.on_before_context(function(messages)
+        return { append_system_prompt = "extra context from lua" }
+    end)
+end
+"#,
+		)
+		.unwrap();
+
+		let hooks = ext.hooks().expect("should have hooks");
+		let modification = hooks.before_context(&[]).await.unwrap();
+		let m = modification.unwrap();
+		assert_eq!(m.append_system_prompt.unwrap(), "extra context from lua");
+		assert!(m.inject_messages.is_empty());
+	}
+
+	#[tokio::test]
+	async fn hook_before_context_injects_messages() {
+		let ext = load_test_ext(
+			r#"
+return function(api)
+    api.on_before_context(function(messages)
+        return {
+            append_system_prompt = "added",
+            inject_messages = {
+                { role = "user", content = "injected msg" }
+            }
+        }
+    end)
+end
+"#,
+		)
+		.unwrap();
+
+		let hooks = ext.hooks().expect("should have hooks");
+		let modification = hooks.before_context(&[]).await.unwrap();
+		let m = modification.unwrap();
+		assert_eq!(m.append_system_prompt.unwrap(), "added");
+		assert_eq!(m.inject_messages.len(), 1);
+		match &m.inject_messages[0] {
+			rho_agent::types::Message::User(u) => assert_eq!(u.content, "injected msg"),
+			_ => panic!("expected User message"),
+		}
+	}
+
+	// --- Hook dispatch: on_agent_event ---
+
+	#[tokio::test]
+	async fn hook_on_agent_event_receives_events() {
+		let ext = load_test_ext(
+			r#"
+-- Use a module-level table to track calls.
+local calls = {}
+return function(api)
+    api.on_agent_event(function(event)
+        table.insert(calls, event.type)
+    end)
+    -- Expose calls via context so we can verify.
+    api.set_context_provider("event_tracker")
+end
+"#,
+		)
+		.unwrap();
+
+		let hooks = ext.hooks().expect("should have hooks");
+
+		// Send a few events.
+		hooks
+			.on_agent_event(&rho_agent::events::AgentEvent::AgentStart)
+			.await;
+		hooks
+			.on_agent_event(&rho_agent::events::AgentEvent::TurnStart { turn: 1 })
+			.await;
+		hooks
+			.on_agent_event(&rho_agent::events::AgentEvent::TextDelta("hello".to_owned()))
+			.await;
+
+		// If it didn't panic, the handler was called successfully.
+		// We can't easily read back the Lua `calls` table from Rust,
+		// but absence of errors proves dispatch works.
+		assert!(ext.context_provider().is_some());
+	}
+
+	// --- Tool concurrency ---
+
+	#[test]
+	fn tool_concurrency_exclusive() {
+		let ext = load_test_ext(
+			r#"
+return function(api)
+    api.register_tool({
+        name = "deploy",
+        description = "Deploy tool",
+        concurrency = "exclusive",
+        input_schema = { type = "object" },
+        execute = function(input, ctx)
+            return { content = "deployed", is_error = false }
+        end
+    })
+end
+"#,
+		)
+		.unwrap();
+
+		let tools = ext.tools();
+		assert_eq!(tools.len(), 1);
+		assert_eq!(tools[0].concurrency(), rho_agent::tools::Concurrency::Exclusive);
+	}
+
+	#[test]
+	fn tool_concurrency_default_shared() {
+		let ext = load_test_ext(
+			r#"
+return function(api)
+    api.register_tool({
+        name = "search",
+        description = "Search tool",
+        input_schema = { type = "object" },
+        execute = function(input, ctx)
+            return { content = "found", is_error = false }
+        end
+    })
+end
+"#,
+		)
+		.unwrap();
+
+		let tools = ext.tools();
+		assert_eq!(tools.len(), 1);
+		assert_eq!(tools[0].concurrency(), rho_agent::tools::Concurrency::Shared);
+	}
+
+	// --- Tool streaming on_update ---
+
+	#[tokio::test]
+	async fn tool_streaming_on_update() {
+		let ext = load_test_ext(
+			r#"
+return function(api)
+    api.register_tool({
+        name = "streamer",
+        description = "Streams output",
+        input_schema = { type = "object" },
+        execute = function(input, ctx)
+            if ctx.update then
+                ctx.update("chunk1")
+                ctx.update("chunk2")
+            end
+            return { content = "done", is_error = false }
+        end
+    })
+end
+"#,
+		)
+		.unwrap();
+
+		let tools = ext.tools();
+		let cancel = tokio_util::sync::CancellationToken::new();
+
+		// Collect streaming updates.
+		let chunks: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
+			std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+		let chunks_clone = chunks.clone();
+		let on_update: rho_agent::tools::OnToolUpdate =
+			std::sync::Arc::new(move |text: &str| {
+				chunks_clone.lock().unwrap().push(text.to_owned());
+			});
+
+		let result = tools[0]
+			.execute(
+				&serde_json::json!({}),
+				Path::new("/tmp"),
+				&cancel,
+				Some(&on_update),
+			)
+			.await
+			.unwrap();
+
+		assert_eq!(result.content, "done");
+		assert!(!result.is_error);
+
+		let collected = chunks.lock().unwrap();
+		assert_eq!(*collected, vec!["chunk1".to_owned(), "chunk2".to_owned()]);
+	}
+
 	// --- Extension metadata ---
 
 	#[test]

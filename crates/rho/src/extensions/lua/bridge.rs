@@ -16,6 +16,7 @@ pub struct ToolRegistration {
 	pub description:  String,
 	pub input_schema: serde_json::Value,
 	pub handler_key:  RegistryKey,
+	pub concurrency:  rho_agent::tools::Concurrency,
 }
 
 pub struct CommandRegistration {
@@ -29,6 +30,8 @@ pub struct CommandRegistration {
 pub struct HookRegistrations {
 	pub before_tool_call: Option<RegistryKey>,
 	pub after_tool_call:  Option<RegistryKey>,
+	pub before_context:   Option<RegistryKey>,
+	pub on_agent_event:   Option<RegistryKey>,
 }
 
 /// Build the `api` table passed to the Lua extension's init function.
@@ -38,7 +41,7 @@ pub struct HookRegistrations {
 pub fn create_api_table(lua: &Lua, regs: Arc<Mutex<Registrations>>) -> Result<Table> {
 	let api = lua.create_table()?;
 
-	// api:register_tool({ name, description, input_schema, execute })
+	// api:register_tool({ name, description, input_schema, execute, concurrency? })
 	{
 		let regs = regs.clone();
 		let register_tool = lua.create_function(move |lua, def: Table| {
@@ -49,11 +52,21 @@ pub fn create_api_table(lua: &Lua, regs: Arc<Mutex<Registrations>>) -> Result<Ta
 			let execute: Function = def.get("execute")?;
 			let handler_key = lua.create_registry_value(execute)?;
 
+			let concurrency_str: Option<String> = def.get::<Option<String>>("concurrency")?.map(|s| s.to_lowercase());
+			let concurrency = match concurrency_str.as_deref() {
+				Some("exclusive") => rho_agent::tools::Concurrency::Exclusive,
+				Some("shared") | None => rho_agent::tools::Concurrency::Shared,
+				Some(other) => {
+					eprintln!("[ext] unknown concurrency mode '{other}', defaulting to shared");
+					rho_agent::tools::Concurrency::Shared
+				},
+			};
+
 			regs
 				.lock()
 				.map_err(|e| mlua::Error::external(format!("lock poisoned: {e}")))?
 				.tools
-				.push(ToolRegistration { name, description, input_schema, handler_key });
+				.push(ToolRegistration { name, description, input_schema, handler_key, concurrency });
 			Ok(())
 		})?;
 		api.set("register_tool", register_tool)?;
@@ -88,6 +101,36 @@ pub fn create_api_table(lua: &Lua, regs: Arc<Mutex<Registrations>>) -> Result<Ta
 			Ok(())
 		})?;
 		api.set("on_after_tool_call", on_after)?;
+	}
+
+	// api:on_before_context(fn(messages) -> { append_system_prompt?, inject_messages? })
+	{
+		let regs = regs.clone();
+		let on_before_ctx = lua.create_function(move |lua, func: Function| {
+			let key = lua.create_registry_value(func)?;
+			regs
+				.lock()
+				.map_err(|e| mlua::Error::external(format!("lock poisoned: {e}")))?
+				.hooks
+				.before_context = Some(key);
+			Ok(())
+		})?;
+		api.set("on_before_context", on_before_ctx)?;
+	}
+
+	// api:on_agent_event(fn(event) -> nil)
+	{
+		let regs = regs.clone();
+		let on_event = lua.create_function(move |lua, func: Function| {
+			let key = lua.create_registry_value(func)?;
+			regs
+				.lock()
+				.map_err(|e| mlua::Error::external(format!("lock poisoned: {e}")))?
+				.hooks
+				.on_agent_event = Some(key);
+			Ok(())
+		})?;
+		api.set("on_agent_event", on_event)?;
 	}
 
 	// api:register_command({ name, aliases?, description, execute })
