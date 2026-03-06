@@ -14,11 +14,11 @@ pub struct GrepTool;
 
 #[async_trait]
 impl Tool for GrepTool {
-	fn name(&self) -> &'static str {
+	fn name(&self) -> &str {
 		"grep"
 	}
 
-	fn description(&self) -> &'static str {
+	fn description(&self) -> &str {
 		include_str!("../prompts/tools/grep.md")
 	}
 

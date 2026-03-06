@@ -1,4 +1,5 @@
 pub mod discovery;
+pub mod lua;
 pub mod manager;
 #[cfg(test)]
 pub mod sample;

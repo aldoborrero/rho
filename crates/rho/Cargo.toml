@@ -34,6 +34,7 @@ toml = "0.8"
 tempfile = "3"
 similar = "2"
 unicode-normalization = "0.1"
+mlua = { version = "0.10", features = ["luau", "send", "serialize", "vendored"] }
 
 [dev-dependencies]
 filetime = "0.2"

@@ -44,11 +44,11 @@ struct EchoTool;
 
 #[async_trait::async_trait]
 impl Tool for EchoTool {
-	fn name(&self) -> &'static str {
+	fn name(&self) -> &str {
 		"echo_tool"
 	}
 
-	fn description(&self) -> &'static str {
+	fn description(&self) -> &str {
 		"Echoes the input back as output (test tool)"
 	}
 

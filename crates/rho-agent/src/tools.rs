@@ -41,10 +41,10 @@ pub type MessageFetcher = Arc<dyn Fn() -> Vec<Message> + Send + Sync>;
 #[async_trait]
 pub trait Tool: Send + Sync {
 	/// The tool name (used in API calls).
-	fn name(&self) -> &'static str;
+	fn name(&self) -> &str;
 
 	/// Human-readable description of the tool.
-	fn description(&self) -> &'static str;
+	fn description(&self) -> &str;
 
 	/// JSON Schema for the tool's input.
 	fn input_schema(&self) -> serde_json::Value;

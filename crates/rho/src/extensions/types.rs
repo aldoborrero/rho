@@ -12,6 +12,22 @@ pub struct ExtensionManifest {
 	pub version:     String,
 	#[serde(default)]
 	pub description: String,
+	#[serde(default)]
+	pub runtime:     Option<RuntimeConfig>,
+}
+
+/// Optional runtime configuration for script-based extensions.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct RuntimeConfig {
+	/// Scripting engine identifier (e.g. `"lua"`).
+	pub engine: String,
+	/// Relative path to the entry point script.
+	#[serde(default = "default_entry")]
+	pub entry:  String,
+}
+
+fn default_entry() -> String {
+	"main.lua".to_owned()
 }
 
 /// A dynamically registered slash command.
