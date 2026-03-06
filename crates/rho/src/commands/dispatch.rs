@@ -4,14 +4,21 @@ use super::{
 	handlers,
 	types::{CommandContext, CommandResult},
 };
-use crate::tools::registry::ToolRegistry;
+use crate::{extensions::ExtensionManager, tools::registry::ToolRegistry};
 
 /// Execute a slash command given a fully-populated context.
+///
+/// Built-in commands are checked first. If none match and `ext_manager` is
+/// provided, dynamic extension commands are checked before returning
+/// "Unknown command".
 #[allow(
 	clippy::future_not_send,
 	reason = "CommandContext borrows SessionManager which contains dyn SessionStorage (not Sync)"
 )]
-pub async fn execute_command(ctx: &CommandContext<'_>) -> anyhow::Result<CommandResult> {
+pub async fn execute_command(
+	ctx: &CommandContext<'_>,
+	ext_manager: Option<&ExtensionManager>,
+) -> anyhow::Result<CommandResult> {
 	match ctx.name {
 		"help" => Ok(handlers::help::cmd_help()),
 		"exit" => Ok(CommandResult::Exit),
@@ -29,10 +36,18 @@ pub async fn execute_command(ctx: &CommandContext<'_>) -> anyhow::Result<Command
 		"config" => Ok(handlers::config_cmd::cmd_config(ctx)),
 		"debug" => Ok(handlers::session::cmd_debug(ctx)),
 		"fork" => Ok(handlers::session::cmd_fork()),
-		_ => Ok(CommandResult::Message(format!(
-			"Unknown command: /{}. Type /help for available commands.",
-			ctx.name
-		))),
+		_ => {
+			// Check extension-provided dynamic commands.
+			if let Some(mgr) = ext_manager {
+				if let Some(result) = mgr.dispatch_command(ctx.name, ctx.args) {
+					return result;
+				}
+			}
+			Ok(CommandResult::Message(format!(
+				"Unknown command: /{}. Type /help for available commands.",
+				ctx.name
+			)))
+		},
 	}
 }
 
@@ -105,7 +120,7 @@ mod tests {
 			model:    "test-model",
 			tools:    &tools,
 		};
-		let result = execute_command(&ctx).await.unwrap();
+		let result = execute_command(&ctx, None).await.unwrap();
 		match result {
 			CommandResult::Message(text) => {
 				assert!(text.contains("/help"));
@@ -129,7 +144,7 @@ mod tests {
 			model:    "test-model",
 			tools:    &tools,
 		};
-		let result = execute_command(&ctx).await.unwrap();
+		let result = execute_command(&ctx, None).await.unwrap();
 		assert!(matches!(result, CommandResult::Exit));
 	}
 
@@ -146,7 +161,7 @@ mod tests {
 			model:    "test-model",
 			tools:    &tools,
 		};
-		let result = execute_command(&ctx).await.unwrap();
+		let result = execute_command(&ctx, None).await.unwrap();
 		assert!(matches!(result, CommandResult::NewSession));
 	}
 
@@ -163,7 +178,7 @@ mod tests {
 			model:    "claude-sonnet-4-5-20250929",
 			tools:    &tools,
 		};
-		let result = execute_command(&ctx).await.unwrap();
+		let result = execute_command(&ctx, None).await.unwrap();
 		assert!(
 			matches!(result, CommandResult::ShowModelSelector),
 			"Expected CommandResult::ShowModelSelector"
@@ -183,7 +198,7 @@ mod tests {
 			model:    "claude-sonnet-4-5-20250929",
 			tools:    &tools,
 		};
-		let result = execute_command(&ctx).await.unwrap();
+		let result = execute_command(&ctx, None).await.unwrap();
 		match result {
 			CommandResult::ModelChange(name) => {
 				assert_eq!(name, "claude-opus-4-20250514");
@@ -205,7 +220,7 @@ mod tests {
 			model:    "test-model",
 			tools:    &tools,
 		};
-		let result = execute_command(&ctx).await.unwrap();
+		let result = execute_command(&ctx, None).await.unwrap();
 		match result {
 			CommandResult::Message(text) => {
 				assert!(text.contains("Session ID:"));
@@ -230,7 +245,7 @@ mod tests {
 			model:    "test-model",
 			tools:    &tools,
 		};
-		let result = execute_command(&ctx).await.unwrap();
+		let result = execute_command(&ctx, None).await.unwrap();
 		match result {
 			CommandResult::Message(text) => {
 				assert!(text.contains("No assistant messages"));
@@ -252,7 +267,7 @@ mod tests {
 			model:    "test-model",
 			tools:    &tools,
 		};
-		let result = execute_command(&ctx).await.unwrap();
+		let result = execute_command(&ctx, None).await.unwrap();
 		match result {
 			CommandResult::Message(text) => {
 				assert!(text.contains("No messages"));
@@ -274,7 +289,7 @@ mod tests {
 			model:    "test-model",
 			tools:    &tools,
 		};
-		let result = execute_command(&ctx).await.unwrap();
+		let result = execute_command(&ctx, None).await.unwrap();
 		match result {
 			CommandResult::Message(text) => {
 				assert!(text.contains("not yet implemented"));
@@ -296,7 +311,7 @@ mod tests {
 			model:    "test-model",
 			tools:    &tools,
 		};
-		let result = execute_command(&ctx).await.unwrap();
+		let result = execute_command(&ctx, None).await.unwrap();
 		match result {
 			CommandResult::Message(text) => {
 				assert!(text.contains("Enter"));
@@ -321,7 +336,7 @@ mod tests {
 			model:    "test-model",
 			tools:    &tools,
 		};
-		let result = execute_command(&ctx).await.unwrap();
+		let result = execute_command(&ctx, None).await.unwrap();
 		match result {
 			CommandResult::Message(text) => {
 				assert!(text.contains("Usage:"));
@@ -343,7 +358,7 @@ mod tests {
 			model:    "test-model",
 			tools:    &tools,
 		};
-		let result = execute_command(&ctx).await.unwrap();
+		let result = execute_command(&ctx, None).await.unwrap();
 		assert!(matches!(result, CommandResult::ChangeDir(_)));
 	}
 
@@ -360,7 +375,7 @@ mod tests {
 			model:    "test-model",
 			tools:    &tools,
 		};
-		let result = execute_command(&ctx).await.unwrap();
+		let result = execute_command(&ctx, None).await.unwrap();
 		match result {
 			CommandResult::Message(text) => {
 				assert!(text.contains("Not a directory"));
@@ -382,7 +397,7 @@ mod tests {
 			model:    "test-model",
 			tools:    &tools,
 		};
-		let result = execute_command(&ctx).await.unwrap();
+		let result = execute_command(&ctx, None).await.unwrap();
 		assert!(matches!(result, CommandResult::Compact(None)));
 	}
 
@@ -399,7 +414,7 @@ mod tests {
 			model:    "test-model",
 			tools:    &tools,
 		};
-		let result = execute_command(&ctx).await.unwrap();
+		let result = execute_command(&ctx, None).await.unwrap();
 		match result {
 			CommandResult::Compact(Some(instructions)) => {
 				assert_eq!(instructions, "focus on errors");
@@ -421,7 +436,7 @@ mod tests {
 			model:    "test-model",
 			tools:    &tools,
 		};
-		let result = execute_command(&ctx).await.unwrap();
+		let result = execute_command(&ctx, None).await.unwrap();
 		match result {
 			CommandResult::Message(text) => {
 				assert!(text.contains("not yet implemented"));
@@ -443,7 +458,7 @@ mod tests {
 			model:    "test-model",
 			tools:    &tools,
 		};
-		let result = execute_command(&ctx).await.unwrap();
+		let result = execute_command(&ctx, None).await.unwrap();
 		match result {
 			CommandResult::Message(text) => {
 				assert!(text.contains("not yet implemented"));
@@ -465,7 +480,7 @@ mod tests {
 			model:    "test-model",
 			tools:    &tools,
 		};
-		let result = execute_command(&ctx).await.unwrap();
+		let result = execute_command(&ctx, None).await.unwrap();
 		match result {
 			CommandResult::Message(text) => {
 				assert!(text.contains("Session ID:"));
@@ -491,7 +506,7 @@ mod tests {
 			model:    "test-model",
 			tools:    &tools,
 		};
-		let result = execute_command(&ctx).await.unwrap();
+		let result = execute_command(&ctx, None).await.unwrap();
 		assert!(matches!(result, CommandResult::Fork));
 	}
 
@@ -508,7 +523,7 @@ mod tests {
 			model:    "test-model",
 			tools:    &tools,
 		};
-		let result = execute_command(&ctx).await.unwrap();
+		let result = execute_command(&ctx, None).await.unwrap();
 		match result {
 			CommandResult::Message(text) => {
 				assert!(text.contains("Unknown command"));

@@ -127,6 +127,7 @@ const fn to_agent_thinking(level: crate::settings::ThinkingLevel) -> ThinkingLev
 /// The `agent_generation` counter is incremented before spawning so that any
 /// events from a previous agent run are automatically ignored by the event
 /// loop's generation check.
+#[allow(clippy::too_many_arguments, reason = "Agent spawning requires wiring many subsystems")]
 fn spawn_agent(
 	model: &rho_ai::Model,
 	messages: &[Message],
@@ -138,6 +139,7 @@ fn spawn_agent(
 	agent_generation: &mut u64,
 	steering_fetcher: Option<rho_agent::tools::MessageFetcher>,
 	follow_up_fetcher: Option<rho_agent::tools::MessageFetcher>,
+	hooks: Option<Arc<dyn rho_agent::hooks::AgentHooks>>,
 ) -> anyhow::Result<tokio_util::sync::CancellationToken> {
 	*agent_generation += 1;
 	let generation = *agent_generation;
@@ -186,6 +188,7 @@ fn spawn_agent(
 			&mut agent_messages,
 			&agent_tools,
 			agent_config,
+			hooks,
 			agent_tx,
 		)
 		.await;
@@ -365,6 +368,7 @@ pub async fn run_interactive(
 	resolved: ResolvedModel,
 	mut session: SessionManager,
 	tools: ToolRegistry,
+	ext_manager: crate::extensions::ExtensionManager,
 ) -> anyhow::Result<()> {
 	// Load session messages if resuming (now a no-op since open() loads).
 	session.load().await?;
@@ -379,10 +383,22 @@ pub async fn run_interactive(
 	let mut model = resolved.model;
 	let mut api_key = resolved.api_key;
 
-	// Build the system prompt once.
+	// Extract hooks and context from extensions.
+	let ext_hooks = ext_manager.hooks();
+	let ext_context = ext_manager.context_strings();
+
+	// Build the system prompt once, including extension context.
+	let mut append = cli.append_system_prompt.clone();
+	if !ext_context.is_empty() {
+		let ext_text = ext_context.join("\n\n");
+		append = Some(match append {
+			Some(existing) => format!("{existing}\n\n{ext_text}"),
+			None => ext_text,
+		});
+	}
 	let system_prompt = crate::prompts::build(&tools, crate::prompts::BuildOptions {
 		custom_prompt:        cli.system_prompt.clone(),
-		append_system_prompt: cli.append_system_prompt.clone(),
+		append_system_prompt: append,
 		cwd:                  std::env::current_dir()?,
 	})
 	.await?;
@@ -515,6 +531,7 @@ pub async fn run_interactive(
 			&mut agent_generation,
 			sf,
 			ff,
+			ext_hooks.clone(),
 		)?);
 	}
 
@@ -648,7 +665,8 @@ pub async fn run_interactive(
 										model: &model.id,
 										tools: &tools,
 									};
-									let result = crate::commands::execute_command(&ctx).await?;
+									let result =
+										crate::commands::execute_command(&ctx, Some(&ext_manager)).await?;
 									if matches!(
 										apply_command_result(
 											result,
@@ -785,6 +803,7 @@ pub async fn run_interactive(
 											&mut agent_generation,
 											sf,
 											ff,
+											ext_hooks.clone(),
 										)?);
 									}
 								},
@@ -816,6 +835,9 @@ pub async fn run_interactive(
 					continue;
 				}
 				match tagged.event {
+					AgentEvent::AgentStart => {
+						// Agent loop starting — no TUI action needed.
+					},
 					AgentEvent::TurnStart { .. } => {
 						if matches!(mode, AppMode::Streaming) {
 							app.status.set_working_phase("Thinking");
@@ -825,6 +847,9 @@ pub async fn run_interactive(
 						if matches!(mode, AppMode::Streaming) {
 							app.chat.append_text(&text);
 						}
+					},
+					AgentEvent::MessageStart => {
+						// Assistant message stream beginning — no TUI action needed.
 					},
 					AgentEvent::ThinkingDelta(text) => {
 						if matches!(mode, AppMode::Streaming) {
@@ -842,9 +867,18 @@ pub async fn run_interactive(
 							app.chat.append_tool_output(&content);
 						}
 					},
-					AgentEvent::ToolCallResult { .. } => {
+					AgentEvent::ToolCallResult { id, content, is_error, .. } => {
 						app.status.set_working_phase("Thinking");
 						app.chat.set_tool_executing(None);
+						let tool_msg =
+							Message::ToolResult(ToolResultMessage { tool_use_id: id, content, is_error });
+						app.chat.add_message(tool_msg.clone());
+						session.append(tool_msg).await?;
+						// Start streaming for next LLM turn.
+						app.chat.start_streaming();
+					},
+					AgentEvent::TurnEnd { .. } => {
+						// Turn completed — no TUI action needed.
 					},
 					AgentEvent::MessageComplete(message) => {
 						if let Some(ref usage) = message.usage {
@@ -852,17 +886,10 @@ pub async fn run_interactive(
 								.set_usage(usage.input_tokens, usage.output_tokens);
 							app.update_status_border(terminal.columns());
 						}
+						let message = Arc::unwrap_or_clone(message);
 						session.append(Message::Assistant(message.clone())).await?;
 						app.chat
 							.finish_streaming_with_message(Message::Assistant(message));
-					},
-					AgentEvent::ToolResultComplete { tool_use_id, content, is_error } => {
-						let tool_msg =
-							Message::ToolResult(ToolResultMessage { tool_use_id, content, is_error });
-						app.chat.add_message(tool_msg.clone());
-						session.append(tool_msg).await?;
-						// Start streaming for next LLM turn.
-						app.chat.start_streaming();
 					},
 					AgentEvent::SteeringProcessed { messages } => {
 						// Agent consumed steering — move from banner to chat.
@@ -881,7 +908,7 @@ pub async fn run_interactive(
 							&format!("Retrying (attempt {attempt}) in {delay_ms}ms: {error}"),
 						);
 					},
-					AgentEvent::Done(outcome) => {
+					AgentEvent::Done { outcome, .. } => {
 						mode = AppMode::Idle;
 						agent_cancel = None;
 						app.chat.finish_streaming();

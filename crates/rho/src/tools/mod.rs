@@ -16,21 +16,34 @@ pub mod write;
 use registry::{ToolRegistry, ToolRegistryBuilder};
 pub use rho_agent::tools::{Concurrency, OnToolUpdate, Tool, ToolOutput};
 
+/// Returns all built-in tool implementations as a `Vec`.
+///
+/// Use this when you need to merge built-in tools with extension-provided
+/// tools before building a [`ToolRegistry`].
+#[must_use]
+pub fn builtin_tools() -> Vec<Box<dyn Tool>> {
+	vec![
+		Box::new(bash::BashTool),
+		Box::new(read::ReadTool),
+		Box::new(write::WriteTool),
+		Box::new(edit::EditTool),
+		Box::new(grep::GrepTool),
+		Box::new(find::FindTool),
+		Box::new(fuzzy_find::FuzzyFindTool),
+		Box::new(clipboard::ClipboardTool),
+		Box::new(html_to_markdown::HtmlToMarkdownTool),
+		Box::new(process::ProcessTool),
+		Box::new(image::ImageTool),
+		Box::new(workmux::WorkmuxTool),
+	]
+}
+
 /// Creates a [`ToolRegistry`] pre-populated with all built-in tools.
 #[must_use]
 pub fn create_default_registry() -> ToolRegistry {
 	let mut builder = ToolRegistryBuilder::new();
-	builder.register(Box::new(bash::BashTool));
-	builder.register(Box::new(read::ReadTool));
-	builder.register(Box::new(write::WriteTool));
-	builder.register(Box::new(edit::EditTool));
-	builder.register(Box::new(grep::GrepTool));
-	builder.register(Box::new(find::FindTool));
-	builder.register(Box::new(fuzzy_find::FuzzyFindTool));
-	builder.register(Box::new(clipboard::ClipboardTool));
-	builder.register(Box::new(html_to_markdown::HtmlToMarkdownTool));
-	builder.register(Box::new(process::ProcessTool));
-	builder.register(Box::new(image::ImageTool));
-	builder.register(Box::new(workmux::WorkmuxTool));
+	for tool in builtin_tools() {
+		builder.register(tool);
+	}
 	builder.build()
 }

@@ -193,11 +193,8 @@ mod tests {
 		let session_file = tmp.path().join("nonexistent-session.jsonl");
 		let breadcrumb_file = breadcrumb_dir.join("test-terminal");
 		std::fs::create_dir_all(&breadcrumb_dir).unwrap();
-		std::fs::write(
-			&breadcrumb_file,
-			format!("{}\n{}\n", cwd.display(), session_file.display()),
-		)
-		.unwrap();
+		std::fs::write(&breadcrumb_file, format!("{}\n{}\n", cwd.display(), session_file.display()))
+			.unwrap();
 
 		let result = read_breadcrumb_from(&breadcrumb_dir, "test-terminal", &cwd);
 		assert_eq!(result, Some(session_file));

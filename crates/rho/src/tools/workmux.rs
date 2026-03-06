@@ -60,7 +60,13 @@ impl Tool for WorkmuxTool {
 		})
 	}
 
-	async fn execute(&self, input: &Value, _cwd: &Path, _cancel: &CancellationToken, _on_update: Option<&OnToolUpdate>) -> anyhow::Result<ToolOutput> {
+	async fn execute(
+		&self,
+		input: &Value,
+		_cwd: &Path,
+		_cancel: &CancellationToken,
+		_on_update: Option<&OnToolUpdate>,
+	) -> anyhow::Result<ToolOutput> {
 		let action = input
 			.get("action")
 			.and_then(Value::as_str)

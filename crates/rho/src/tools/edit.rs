@@ -1,5 +1,4 @@
-use std::fmt::Write as _;
-use std::path::Path;
+use std::{fmt::Write as _, path::Path};
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -69,7 +68,7 @@ const fn is_special_unicode_space(c: char) -> bool {
 		| '\u{200A}'  // HAIR SPACE
 		| '\u{202F}'  // NARROW NO-BREAK SPACE
 		| '\u{205F}'  // MEDIUM MATHEMATICAL SPACE
-		| '\u{3000}'  // IDEOGRAPHIC SPACE
+		| '\u{3000}' // IDEOGRAPHIC SPACE
 	)
 }
 
@@ -166,7 +165,8 @@ fn map_normalized_range_to_original(
 		}
 	}
 
-	// If we exhausted norm_chars while still in the match region, track remaining original chars
+	// If we exhausted norm_chars while still in the match region, track remaining
+	// original chars
 	if orig_start.is_some() && ni >= norm_chars.len() {
 		// We reached the end of normalized content during the match
 		// Consume any remaining trailing whitespace in original
@@ -232,7 +232,8 @@ fn fuzzy_find_text(content: &str, old_text: &str) -> FuzzyMatchResult {
 	FuzzyMatchResult::NotFound
 }
 
-/// Helper: try to find `needle` in `normalized_content` and map back to original.
+/// Helper: try to find `needle` in `normalized_content` and map back to
+/// original.
 fn try_normalized_find(
 	original: &str,
 	normalized_content: &str,
@@ -274,8 +275,10 @@ fn generate_diff(old_content: &str, new_content: &str) -> String {
 		}
 		for op in group {
 			for change in diff.iter_changes(op) {
-				let lineno =
-					change.old_index().or_else(|| change.new_index()).map_or(0, |n| n + 1);
+				let lineno = change
+					.old_index()
+					.or_else(|| change.new_index())
+					.map_or(0, |n| n + 1);
 				let sign = match change.tag() {
 					similar::ChangeTag::Delete => '-',
 					similar::ChangeTag::Insert => '+',
@@ -373,7 +376,7 @@ impl Tool for EditTool {
 					content:  format!("Error reading {}: {e}", path.display()),
 					is_error: true,
 				});
-			}
+			},
 		};
 
 		// Strip BOM for matching purposes
@@ -390,7 +393,8 @@ impl Tool for EditTool {
 		if occurrence_count > 1 {
 			return Ok(ToolOutput {
 				content:  format!(
-					"Found {occurrence_count} occurrences in {}. Provide more context to make it unique.",
+					"Found {occurrence_count} occurrences in {}. Provide more context to make it \
+					 unique.",
 					path.display()
 				),
 				is_error: true,
@@ -403,13 +407,10 @@ impl Tool for EditTool {
 			FuzzyMatchResult::Fuzzy(pos, len) => (pos, len),
 			FuzzyMatchResult::NotFound => {
 				return Ok(ToolOutput {
-					content:  format!(
-						"Could not find the specified text in {}",
-						path.display()
-					),
+					content:  format!("Could not find the specified text in {}", path.display()),
 					is_error: true,
 				});
-			}
+			},
 		};
 
 		// Perform the replacement in LF-normalized space
@@ -445,10 +446,7 @@ impl Tool for EditTool {
 		fs::write(temp.path(), &write_content).await?;
 		temp.persist(&path)?;
 
-		Ok(ToolOutput {
-			content: diff,
-			is_error: false,
-		})
+		Ok(ToolOutput { content: diff, is_error: false })
 	}
 }
 
@@ -458,21 +456,27 @@ mod tests {
 
 	use super::*;
 
-	async fn run_edit(dir: &Path, file_path: &str, old_string: &str, new_string: &str) -> ToolOutput {
+	async fn run_edit(
+		dir: &Path,
+		file_path: &str,
+		old_string: &str,
+		new_string: &str,
+	) -> ToolOutput {
 		let tool = EditTool;
 		let ct = CancellationToken::new();
-		tool.execute(
-			&json!({
-				"file_path": file_path,
-				"old_string": old_string,
-				"new_string": new_string,
-			}),
-			dir,
-			&ct,
-			None,
-		)
-		.await
-		.unwrap()
+		tool
+			.execute(
+				&json!({
+					"file_path": file_path,
+					"old_string": old_string,
+					"new_string": new_string,
+				}),
+				dir,
+				&ct,
+				None,
+			)
+			.await
+			.unwrap()
 	}
 
 	#[tokio::test]
@@ -568,7 +572,8 @@ mod tests {
 		std::fs::write(&file, "hello   \nworld\n").unwrap();
 
 		// Search without trailing spaces
-		let result = run_edit(dir.path(), file.to_str().unwrap(), "hello\nworld", "goodbye\nearth").await;
+		let result =
+			run_edit(dir.path(), file.to_str().unwrap(), "hello\nworld", "goodbye\nearth").await;
 		assert!(!result.is_error, "unexpected error: {}", result.content);
 
 		let content = std::fs::read_to_string(&file).unwrap();
@@ -583,7 +588,8 @@ mod tests {
 		std::fs::write(&file, "say \u{201C}hello\u{201D}\n").unwrap();
 
 		// Search with straight quotes
-		let result = run_edit(dir.path(), file.to_str().unwrap(), "say \"hello\"", "say \"goodbye\"").await;
+		let result =
+			run_edit(dir.path(), file.to_str().unwrap(), "say \"hello\"", "say \"goodbye\"").await;
 		assert!(!result.is_error, "unexpected error: {}", result.content);
 
 		let content = std::fs::read_to_string(&file).unwrap();

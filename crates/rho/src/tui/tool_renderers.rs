@@ -100,7 +100,8 @@ fn arg_str<'a>(args: &'a Value, field: &str) -> &'a str {
 /// Extract the file path from Read tool args (checks both `"path"` and
 /// `"file_path"` for compatibility).
 fn read_path(args: &Value) -> &str {
-	args.get("path")
+	args
+		.get("path")
 		.or_else(|| args.get("file_path"))
 		.and_then(Value::as_str)
 		.unwrap_or("")
@@ -166,25 +167,22 @@ fn render_result_block(
 	let setup =
 		build_tool_block_setup(tool_name, result, collapsed_lines, expanded_lines, expanded, theme);
 	let opts = OutputBlockOptions {
-		header: setup.header_text,
+		header:       setup.header_text,
 		header_width: setup.header_width,
-		state: setup.state,
-		sections: vec![OutputSection {
+		state:        setup.state,
+		sections:     vec![OutputSection {
 			label: section_label.map(|l| theme.dim(l)),
 			lines: setup.collapsed,
 		}],
 		border_style: make_border_style(theme, setup.state),
-		bg_style: make_bg_style(theme, setup.state),
+		bg_style:     make_bg_style(theme, setup.state),
 	};
 	render_output_block(&opts, width)
 }
 
 /// Render a combined call + result block. Takes pre-built sections for the call
 /// info, then appends a result section with collapsed content.
-#[allow(
-	clippy::too_many_arguments,
-	reason = "private helper consolidating combined render logic"
-)]
+#[allow(clippy::too_many_arguments, reason = "private helper consolidating combined render logic")]
 fn render_combined_block(
 	tool_name: &str,
 	call_sections: Vec<OutputSection>,
@@ -199,10 +197,8 @@ fn render_combined_block(
 	let setup =
 		build_tool_block_setup(tool_name, result, collapsed_lines, expanded_lines, expanded, theme);
 	let mut sections = call_sections;
-	sections.push(OutputSection {
-		label: result_label.map(|l| theme.dim(l)),
-		lines: setup.collapsed,
-	});
+	sections
+		.push(OutputSection { label: result_label.map(|l| theme.dim(l)), lines: setup.collapsed });
 	let opts = OutputBlockOptions {
 		header: setup.header_text,
 		header_width: setup.header_width,
@@ -261,7 +257,17 @@ impl ToolRenderer for BashRenderer {
 			label: Some(theme.dim("Command")),
 			lines: vec![format!("$ {command}")],
 		}];
-		render_combined_block("Bash", call_sections, result, Some("Output"), 10, 30, expanded, theme, width)
+		render_combined_block(
+			"Bash",
+			call_sections,
+			result,
+			Some("Output"),
+			10,
+			30,
+			expanded,
+			theme,
+			width,
+		)
 	}
 }
 
@@ -340,7 +346,11 @@ pub fn render_read_group(
 	let header = theme.fg(ThemeColor::Dim, &format!("\u{2022} Read ({})", entries.len()));
 	lines.push(format!("  {header}"));
 	for (i, entry) in entries.iter().enumerate() {
-		let connector = if i == entries.len() - 1 { tree.last } else { tree.branch };
+		let connector = if i == entries.len() - 1 {
+			tree.last
+		} else {
+			tree.branch
+		};
 		let connector_styled = theme.fg(ThemeColor::Dim, connector);
 		let icon = if entry.is_error {
 			theme.fg(ThemeColor::Error, "\u{2718}")
@@ -394,10 +404,8 @@ impl ToolRenderer for WriteRenderer {
 		width: u16,
 	) -> Vec<String> {
 		let file = arg_str(args, "file_path");
-		let call_sections = vec![OutputSection {
-			label: Some(theme.dim("File")),
-			lines: vec![file.to_owned()],
-		}];
+		let call_sections =
+			vec![OutputSection { label: Some(theme.dim("File")), lines: vec![file.to_owned()] }];
 		render_combined_block("Write", call_sections, result, None, 5, 20, expanded, theme, width)
 	}
 }
@@ -458,10 +466,8 @@ impl ToolRenderer for EditRenderer {
 		width: u16,
 	) -> Vec<String> {
 		let file = arg_str(args, "file_path");
-		let mut call_sections = vec![OutputSection {
-			label: Some(theme.dim("File")),
-			lines: vec![file.to_owned()],
-		}];
+		let mut call_sections =
+			vec![OutputSection { label: Some(theme.dim("File")), lines: vec![file.to_owned()] }];
 		let old_string = arg_str(args, "old_string");
 		let new_string = arg_str(args, "new_string");
 		if !old_string.is_empty() || !new_string.is_empty() {
@@ -519,11 +525,19 @@ impl ToolRenderer for GrepRenderer {
 		width: u16,
 	) -> Vec<String> {
 		let pattern = arg_str(args, "pattern");
-		let call_sections = vec![OutputSection {
-			label: Some(theme.dim("Pattern")),
-			lines: vec![pattern.to_owned()],
-		}];
-		render_combined_block("Grep", call_sections, result, Some("Matches"), 5, 20, expanded, theme, width)
+		let call_sections =
+			vec![OutputSection { label: Some(theme.dim("Pattern")), lines: vec![pattern.to_owned()] }];
+		render_combined_block(
+			"Grep",
+			call_sections,
+			result,
+			Some("Matches"),
+			5,
+			20,
+			expanded,
+			theme,
+			width,
+		)
 	}
 }
 
@@ -568,11 +582,19 @@ impl ToolRenderer for FindRenderer {
 		width: u16,
 	) -> Vec<String> {
 		let pattern = arg_str(args, "pattern");
-		let call_sections = vec![OutputSection {
-			label: Some(theme.dim("Pattern")),
-			lines: vec![pattern.to_owned()],
-		}];
-		render_combined_block("Find", call_sections, result, Some("Files"), 5, 20, expanded, theme, width)
+		let call_sections =
+			vec![OutputSection { label: Some(theme.dim("Pattern")), lines: vec![pattern.to_owned()] }];
+		render_combined_block(
+			"Find",
+			call_sections,
+			result,
+			Some("Files"),
+			5,
+			20,
+			expanded,
+			theme,
+			width,
+		)
 	}
 }
 
@@ -923,10 +945,7 @@ mod tests {
 		let lines = BashRenderer.render_combined(&args, &result, false, &theme, 80);
 		assert!(!lines.is_empty());
 		assert!(lines.iter().any(|l| l.contains("Bash")), "combined block should mention Bash");
-		assert!(
-			lines.iter().any(|l| l.contains("$ ls -la")),
-			"combined block should show command",
-		);
+		assert!(lines.iter().any(|l| l.contains("$ ls -la")), "combined block should show command",);
 		assert!(
 			lines.iter().any(|l| l.contains("operation completed")),
 			"combined block should show result content",
@@ -984,10 +1003,7 @@ mod tests {
 		let result = success_result();
 		let lines = GrepRenderer.render_combined(&args, &result, false, &theme, 80);
 		assert!(lines.iter().any(|l| l.contains("Grep")), "combined block should mention Grep");
-		assert!(
-			lines.iter().any(|l| l.contains("TODO")),
-			"combined block should show pattern",
-		);
+		assert!(lines.iter().any(|l| l.contains("TODO")), "combined block should show pattern",);
 	}
 
 	#[test]
@@ -997,10 +1013,7 @@ mod tests {
 		let result = success_result();
 		let lines = FindRenderer.render_combined(&args, &result, false, &theme, 80);
 		assert!(lines.iter().any(|l| l.contains("Find")), "combined block should mention Find");
-		assert!(
-			lines.iter().any(|l| l.contains("*.rs")),
-			"combined block should show pattern",
-		);
+		assert!(lines.iter().any(|l| l.contains("*.rs")), "combined block should show pattern",);
 	}
 
 	#[test]
@@ -1015,10 +1028,7 @@ mod tests {
 			"combined should include file path, got: {:?}",
 			combined[0],
 		);
-		assert!(
-			combined[0].contains('\u{2714}'),
-			"combined should include check mark for success",
-		);
+		assert!(combined[0].contains('\u{2714}'), "combined should include check mark for success",);
 	}
 
 	#[test]
@@ -1027,14 +1037,8 @@ mod tests {
 		let args = serde_json::json!({ "path": "missing.rs" });
 		let result = error_result();
 		let combined = ReadRenderer.render_combined(&args, &result, false, &theme, 80);
-		assert!(
-			combined[0].contains('\u{2718}'),
-			"combined error should include cross mark",
-		);
-		assert!(
-			combined[0].contains("missing.rs"),
-			"combined error should include file path",
-		);
+		assert!(combined[0].contains('\u{2718}'), "combined error should include cross mark",);
+		assert!(combined[0].contains("missing.rs"), "combined error should include file path",);
 	}
 
 	#[test]

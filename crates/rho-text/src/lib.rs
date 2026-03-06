@@ -17,9 +17,7 @@ pub mod wrap;
 
 pub use ansi::AnsiState;
 pub use sanitize::sanitize_text_str;
-pub use slice::{
-	ExtractSegmentsResult, SliceResult, extract_segments_str, slice_with_width_str,
-};
+pub use slice::{ExtractSegmentsResult, SliceResult, extract_segments_str, slice_with_width_str};
 pub use truncate::{EllipsisKind, truncate_to_width_str};
 pub use width::visible_width_str;
 pub use wrap::wrap_text_with_ansi_str;

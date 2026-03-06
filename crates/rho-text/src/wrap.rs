@@ -6,9 +6,7 @@
 use smallvec::{SmallVec, smallvec};
 
 use crate::{
-	ansi::{
-		AnsiState, ansi_seq_len_bytes, is_sgr_bytes, update_state_from_text_bytes,
-	},
+	ansi::{AnsiState, ansi_seq_len_bytes, is_sgr_bytes, update_state_from_text_bytes},
 	width::{grapheme_width_str, visible_width_str},
 };
 

@@ -36,7 +36,13 @@ impl Tool for ClipboardTool {
 		Concurrency::Exclusive
 	}
 
-	async fn execute(&self, input: &Value, _cwd: &Path, _cancel: &CancellationToken, _on_update: Option<&OnToolUpdate>) -> anyhow::Result<ToolOutput> {
+	async fn execute(
+		&self,
+		input: &Value,
+		_cwd: &Path,
+		_cancel: &CancellationToken,
+		_on_update: Option<&OnToolUpdate>,
+	) -> anyhow::Result<ToolOutput> {
 		let text = input
 			.get("text")
 			.and_then(Value::as_str)

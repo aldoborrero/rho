@@ -1,7 +1,7 @@
 //! Compaction settings and threshold calculation.
 //!
-//! oh-my-pi ref: `compaction.ts` `CompactionSettings`, `effectiveReserveTokens()`,
-//! `shouldCompact()`
+//! oh-my-pi ref: `compaction.ts` `CompactionSettings`,
+//! `effectiveReserveTokens()`, `shouldCompact()`
 
 // Re-export the canonical CompactionSettings from the layered settings system.
 pub use crate::settings::CompactionSettings;

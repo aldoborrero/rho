@@ -53,7 +53,9 @@ impl AutocompleteProvider for RhoAutocompleteProvider {
 		prefix: &str,
 	) -> CompletionResult {
 		let ac_item = to_autocomplete_item(item);
-		let result = self.inner.apply_completion(lines, cursor_line, cursor_col, &ac_item, prefix);
+		let result = self
+			.inner
+			.apply_completion(lines, cursor_line, cursor_col, &ac_item, prefix);
 		CompletionResult {
 			lines:       result.lines,
 			cursor_line: result.cursor_line,
@@ -85,7 +87,9 @@ impl AutocompleteProvider for RhoAutocompleteProvider {
 		cursor_line: usize,
 		cursor_col: usize,
 	) -> Option<AutocompleteSuggestions> {
-		let result = self.inner.get_force_file_suggestions(lines, cursor_line, cursor_col)?;
+		let result = self
+			.inner
+			.get_force_file_suggestions(lines, cursor_line, cursor_col)?;
 		Some(AutocompleteSuggestions {
 			items:  result.items.into_iter().map(to_select_item).collect(),
 			prefix: result.prefix,

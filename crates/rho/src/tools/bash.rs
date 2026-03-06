@@ -288,7 +288,12 @@ mod tests {
 		let ct = CancellationToken::new();
 		// Generate output larger than MAX_OUTPUT_BYTES (100KB).
 		let result = tool
-			.execute(&json!({"command": "head -c 204800 /dev/urandom | base64"}), Path::new("."), &ct, None)
+			.execute(
+				&json!({"command": "head -c 204800 /dev/urandom | base64"}),
+				Path::new("."),
+				&ct,
+				None,
+			)
 			.await
 			.unwrap();
 		// Output should contain the truncation notice.

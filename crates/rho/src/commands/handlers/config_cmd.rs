@@ -34,7 +34,9 @@ fn cmd_config_list() -> CommandResult {
 fn cmd_config_get(args: &str) -> CommandResult {
 	let key = args.trim();
 	if key.is_empty() {
-		return CommandResult::Message("Usage: /config get <key>\n\nExample: /config get agent.max_tokens".to_owned());
+		return CommandResult::Message(
+			"Usage: /config get <key>\n\nExample: /config get agent.max_tokens".to_owned(),
+		);
 	}
 	match crate::settings::get(key) {
 		Some(value) => CommandResult::Message(format!("{key} = {value}")),
@@ -51,9 +53,7 @@ fn cmd_config_set(args: &str) -> CommandResult {
 		);
 	}
 	match crate::settings::set(key, value) {
-		Ok(()) => {
-			CommandResult::SettingsChanged
-		},
+		Ok(()) => CommandResult::SettingsChanged,
 		Err(e) => CommandResult::Message(format!("Failed to set {key}: {e}")),
 	}
 }
@@ -64,9 +64,7 @@ fn cmd_config_reset(args: &str) -> CommandResult {
 		return CommandResult::Message("Usage: /config reset <key>".to_owned());
 	}
 	match crate::settings::reset(key) {
-		Ok(()) => {
-			CommandResult::SettingsChanged
-		},
+		Ok(()) => CommandResult::SettingsChanged,
 		Err(e) => CommandResult::Message(format!("Failed to reset {key}: {e}")),
 	}
 }
@@ -108,6 +106,9 @@ mod tests {
 
 	#[test]
 	fn split_first_word_with_extra_spaces() {
-		assert_eq!(split_first_word("  set   agent.max_tokens  16384  "), ("set", "agent.max_tokens  16384"));
+		assert_eq!(
+			split_first_word("  set   agent.max_tokens  16384  "),
+			("set", "agent.max_tokens  16384")
+		);
 	}
 }

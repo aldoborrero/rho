@@ -2,8 +2,10 @@
 //!
 //! oh-my-pi ref: `compaction.ts` `estimateTokens()` lines 195-253
 
-use crate::ai::types::{AssistantMessage, ContentBlock, Message};
-use crate::session::types::SessionEntry;
+use crate::{
+	ai::types::{AssistantMessage, ContentBlock, Message},
+	session::types::SessionEntry,
+};
 
 /// Estimate token count for a message using chars/4 heuristic.
 pub fn estimate_tokens(message: &Message) -> u32 {
@@ -89,11 +91,11 @@ mod tests {
 	fn assistant_mixed_content() {
 		let msg = Message::Assistant(AssistantMessage {
 			content:     vec![
-				ContentBlock::Text { text: "Hello".to_owned() },       // 5 chars
+				ContentBlock::Text { text: "Hello".to_owned() }, // 5 chars
 				ContentBlock::Thinking { thinking: "hmm".to_owned() }, // 3 chars
 				ContentBlock::ToolUse {
 					id:    "t1".to_owned(),
-					name:  "bash".to_owned(),                              // 4 chars
+					name:  "bash".to_owned(),                // 4 chars
 					input: serde_json::json!({"cmd": "ls"}), // ~12 chars as JSON
 				},
 			],
@@ -130,14 +132,13 @@ mod tests {
 
 	#[test]
 	fn entry_tokens_for_metadata() {
-		let entry = SessionEntry::ThinkingLevelChange(
-			crate::session::types::ThinkingLevelChangeEntry {
+		let entry =
+			SessionEntry::ThinkingLevelChange(crate::session::types::ThinkingLevelChangeEntry {
 				id:             "t1".to_owned(),
 				parent_id:      None,
 				timestamp:      "2026-01-01T00:00:00Z".to_owned(),
 				thinking_level: "high".to_owned(),
-			},
-		);
+			});
 		assert_eq!(estimate_entry_tokens(&entry), 0);
 	}
 }

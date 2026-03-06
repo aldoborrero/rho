@@ -3,6 +3,7 @@ pub mod cli;
 pub mod commands;
 pub mod compaction;
 pub mod config;
+pub mod extensions;
 pub mod models_config;
 pub mod modes;
 pub mod prompts;

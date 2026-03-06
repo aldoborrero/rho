@@ -1,11 +1,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use rho::cli::Cli;
-use rho::config;
-use rho::modes;
-use rho::session::SessionManager;
-use rho::tools::create_default_registry;
+use rho::{cli::Cli, config, modes, session::SessionManager, tools::registry::ToolRegistryBuilder};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -13,8 +9,12 @@ async fn main() -> anyhow::Result<()> {
 	let settings = rho::settings::load(&cli)?;
 	let models_config = rho::models_config::load_models_config()?;
 	let registry = rho::models_config::build_registry(&models_config, &settings);
-	let resolved =
-		rho::models_config::resolve_model(&settings.model.default, &registry, &settings, &models_config)?;
+	let resolved = rho::models_config::resolve_model(
+		&settings.model.default,
+		&registry,
+		&settings,
+		&models_config,
+	)?;
 
 	let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 	let session = if cli.no_session {
@@ -34,7 +34,21 @@ async fn main() -> anyhow::Result<()> {
 		SessionManager::create(&cwd, None)?
 	};
 
-	let tools = create_default_registry();
+	// Initialize extension manager and discover extensions.
+	let mut ext_manager = rho::extensions::ExtensionManager::new();
+	rho::extensions::discovery::discover_and_load(&mut ext_manager, &settings)?;
+
+	// Build tool registry: built-in tools + extension tools.
+	let tools = {
+		let mut builder = ToolRegistryBuilder::new();
+		for tool in rho::tools::builtin_tools() {
+			builder.register(tool);
+		}
+		for tool in ext_manager.extension_tools() {
+			builder.register(tool);
+		}
+		builder.build()
+	};
 
 	modes::interactive::run_interactive(
 		&cli,
@@ -44,6 +58,7 @@ async fn main() -> anyhow::Result<()> {
 		resolved,
 		session,
 		tools,
+		ext_manager,
 	)
 	.await
 }

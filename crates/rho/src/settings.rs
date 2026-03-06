@@ -24,6 +24,7 @@ pub struct Settings {
 	pub agent:      AgentSettings,
 	pub compaction: CompactionSettings,
 	pub retry:      RetrySettings,
+	pub extensions: ExtensionSettings,
 
 	/// Resolved at load time, not from TOML.
 	#[serde(skip)]
@@ -43,6 +44,7 @@ impl Default for Settings {
 			agent:      AgentSettings::default(),
 			compaction: CompactionSettings::default(),
 			retry:      RetrySettings::default(),
+			extensions: ExtensionSettings::default(),
 			api_key:    String::new(),
 			base_url:   "https://api.anthropic.com".to_owned(),
 			is_oauth:   false,
@@ -126,6 +128,24 @@ pub struct RetrySettings {
 impl Default for RetrySettings {
 	fn default() -> Self {
 		Self { max_retries: 3, base_delay_ms: 2000 }
+	}
+}
+
+/// Extension system settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ExtensionSettings {
+	/// Whether the extension system is enabled.
+	pub enabled:     bool,
+	/// Additional directories to scan for extensions.
+	pub extra_paths: Vec<String>,
+	/// Extension IDs to skip during discovery.
+	pub disabled:    Vec<String>,
+}
+
+impl Default for ExtensionSettings {
+	fn default() -> Self {
+		Self { enabled: true, extra_paths: Vec::new(), disabled: Vec::new() }
 	}
 }
 
