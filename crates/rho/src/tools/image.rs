@@ -11,11 +11,11 @@ pub struct ImageTool;
 
 #[async_trait]
 impl Tool for ImageTool {
-	fn name(&self) -> &'static str {
+	fn name(&self) -> &str {
 		"image"
 	}
 
-	fn description(&self) -> &'static str {
+	fn description(&self) -> &str {
 		include_str!("../prompts/tools/image.md")
 	}
 

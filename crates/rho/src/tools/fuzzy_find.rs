@@ -14,11 +14,11 @@ pub struct FuzzyFindTool;
 
 #[async_trait]
 impl Tool for FuzzyFindTool {
-	fn name(&self) -> &'static str {
+	fn name(&self) -> &str {
 		"fuzzy_find"
 	}
 
-	fn description(&self) -> &'static str {
+	fn description(&self) -> &str {
 		include_str!("../prompts/tools/fuzzy_find.md")
 	}
 

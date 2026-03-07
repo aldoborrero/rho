@@ -10,11 +10,11 @@ use crate::settings::Settings;
 /// 2. `.rho/extensions/*/extension.toml` (project-local)
 /// 3. Paths from `settings.extensions.extra_paths`
 ///
-/// Currently discovers manifests and logs them. Rust-compiled-in extensions
-/// are the only loadable type; the manifest format is established for future
-/// scripting support.
+/// Extensions with a `[runtime]` section specifying `engine = "lua"` are loaded
+/// via the Luau scripting runtime. Extensions without a runtime section are
+/// logged as discovered (manifest-only).
 pub fn discover_and_load(
-	_manager: &mut ExtensionManager,
+	manager: &mut ExtensionManager,
 	settings: &Settings,
 ) -> anyhow::Result<()> {
 	if !settings.extensions.enabled {
@@ -23,18 +23,39 @@ pub fn discover_and_load(
 
 	let manifests = discover_manifests(settings);
 
-	for (path, manifest) in &manifests {
+	for (path, manifest) in manifests {
 		if settings.extensions.disabled.contains(&manifest.id) {
 			continue;
 		}
-		// Log discovered extensions. Actual loading of script-based extensions
-		// is deferred to Phase 4 (QuickJS runtime).
-		eprintln!(
-			"[extensions] discovered: {} v{} ({})",
-			manifest.name,
-			manifest.version,
-			path.display()
-		);
+
+		match &manifest.runtime {
+			#[cfg(feature = "lua")]
+			Some(rc) if rc.engine == "lua" => {
+				let ext_dir = path.parent().unwrap_or(Path::new("."));
+				match super::lua::load_lua_extension(
+					manifest.clone(),
+					ext_dir.to_owned(),
+					rc.entry.clone(),
+				) {
+					Ok(ext) => {
+						eprintln!("[extensions] loaded Lua: {} v{}", manifest.name, manifest.version);
+						manager.load(ext);
+					},
+					Err(e) => {
+						eprintln!("[extensions] failed to load {}: {e}", manifest.id);
+					},
+				}
+			},
+			Some(rc) => {
+				eprintln!("[extensions] unsupported engine '{}' for {}", rc.engine, manifest.id);
+			},
+			None => {
+				eprintln!(
+					"[extensions] discovered (no runtime): {} v{}",
+					manifest.name, manifest.version
+				);
+			},
+		}
 	}
 
 	Ok(())

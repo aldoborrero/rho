@@ -54,11 +54,11 @@ pub struct BashTool;
 
 #[async_trait]
 impl Tool for BashTool {
-	fn name(&self) -> &'static str {
+	fn name(&self) -> &str {
 		"bash"
 	}
 
-	fn description(&self) -> &'static str {
+	fn description(&self) -> &str {
 		include_str!("../prompts/tools/bash.md")
 	}
 

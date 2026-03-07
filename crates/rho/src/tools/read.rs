@@ -15,11 +15,11 @@ pub struct ReadTool;
 
 #[async_trait]
 impl Tool for ReadTool {
-	fn name(&self) -> &'static str {
+	fn name(&self) -> &str {
 		"read"
 	}
 
-	fn description(&self) -> &'static str {
+	fn description(&self) -> &str {
 		include_str!("../prompts/tools/read.md")
 	}
 

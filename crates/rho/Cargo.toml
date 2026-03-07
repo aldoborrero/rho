@@ -9,6 +9,10 @@ repository.workspace = true
 name = "rho"
 path = "src/main.rs"
 
+[features]
+default = ["lua"]
+lua = ["dep:mlua"]
+
 [dependencies]
 rho-ai = { path = "../rho-ai" }
 rho-agent = { path = "../rho-agent" }
@@ -34,6 +38,7 @@ toml = "0.8"
 tempfile = "3"
 similar = "2"
 unicode-normalization = "0.1"
+mlua = { version = "0.10", features = ["luau", "send", "serialize", "vendored"], optional = true }
 
 [dev-dependencies]
 filetime = "0.2"

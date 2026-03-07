@@ -14,11 +14,11 @@ pub struct FindTool;
 
 #[async_trait]
 impl Tool for FindTool {
-	fn name(&self) -> &'static str {
+	fn name(&self) -> &str {
 		"find"
 	}
 
-	fn description(&self) -> &'static str {
+	fn description(&self) -> &str {
 		include_str!("../prompts/tools/find.md")
 	}
 

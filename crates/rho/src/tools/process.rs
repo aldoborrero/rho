@@ -14,11 +14,11 @@ pub struct ProcessTool;
 
 #[async_trait]
 impl Tool for ProcessTool {
-	fn name(&self) -> &'static str {
+	fn name(&self) -> &str {
 		"process"
 	}
 
-	fn description(&self) -> &'static str {
+	fn description(&self) -> &str {
 		include_str!("../prompts/tools/process.md")
 	}
 

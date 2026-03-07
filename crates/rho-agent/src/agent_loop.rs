@@ -867,11 +867,11 @@ mod tests {
 
 	#[async_trait::async_trait]
 	impl crate::tools::Tool for MockExclusiveTool {
-		fn name(&self) -> &'static str {
+		fn name(&self) -> &str {
 			self.name
 		}
 
-		fn description(&self) -> &'static str {
+		fn description(&self) -> &str {
 			"mock"
 		}
 
