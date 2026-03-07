@@ -27,5 +27,8 @@ pkgs.mkShellNoCC {
 
   shellHook = ''
     export PRJ_ROOT=$PWD
+    ${pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
+      export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [pkgs.stdenv.cc.cc.lib]}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    ''}
   '';
 }
