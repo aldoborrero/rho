@@ -22,10 +22,19 @@ use crate::{
 	},
 };
 
-/// Cached rendered output for a single tool result.
-struct CachedRender {
-	expanded: bool,
+/// Cached rendered output for a message or content block.
+///
+/// Used for both committed messages (keyed by item index) and streaming text
+/// (keyed by text length), as well as tool results (keyed by tool_use_id).
+struct RenderedLines {
+	/// Content identity — length of source text when cached.
+	/// For committed messages this is unused (0); for streaming it grows.
+	text_len: usize,
+	/// Terminal width used to render.
 	width:    u16,
+	/// Whether tools were expanded when cached.
+	expanded: bool,
+	/// Pre-rendered ANSI lines.
 	lines:    Vec<String>,
 }
 
@@ -66,7 +75,10 @@ pub struct ChatComponent {
 	/// Wrapped in `RefCell` so `render_tool_result` can take `&self` and
 	/// avoid a borrow conflict with the immutable `self.items` iteration in
 	/// `Component::render`.
-	render_cache:          RefCell<HashMap<String, CachedRender>>,
+	render_cache:          RefCell<HashMap<String, RenderedLines>>,
+	/// Per-item rendered line cache, keyed by item index in `self.items`.
+	/// Invalidated on width change, expansion toggle, or item mutation.
+	item_render_cache:     RefCell<HashMap<usize, RenderedLines>>,
 	/// Cache: `tool_use_id` -> `tool_name`, populated in `add_message()`.
 	tool_name_cache:       HashMap<String, String>,
 	/// Animated spinner for loading states.
@@ -77,6 +89,9 @@ pub struct ChatComponent {
 	streaming_bang:        Option<BangOutput>,
 	/// Accumulated streaming output from a running tool (for spinner updates).
 	streaming_tool_output: String,
+	/// Cached render of `streaming_text` — invalidated when text length or
+	/// render width changes.
+	streaming_cache:       Option<RenderedLines>,
 }
 
 impl ChatComponent {
@@ -103,11 +118,13 @@ impl ChatComponent {
 			symbols,
 			tools_expanded: false,
 			render_cache: RefCell::new(HashMap::new()),
+			item_render_cache: RefCell::new(HashMap::new()),
 			tool_name_cache: HashMap::new(),
 			loader,
 			tool_executing: None,
 			streaming_bang: None,
 			streaming_tool_output: String::new(),
+			streaming_cache: None,
 		}
 	}
 
@@ -138,6 +155,9 @@ impl ChatComponent {
 	/// (avoids spamming consecutive status lines, matching oh-my-pi).
 	pub fn show_status(&mut self, text: &str) {
 		if matches!(self.items.last(), Some(ChatItem::Status(_))) {
+			// Invalidate cache for the replaced item index.
+			let last_idx = self.items.len() - 1;
+			self.item_render_cache.borrow_mut().remove(&last_idx);
 			self.items.pop();
 		}
 		self.items.push(ChatItem::Status(text.to_owned()));
@@ -182,6 +202,7 @@ impl ChatComponent {
 		self.is_streaming = true;
 		self.streaming_text.clear();
 		self.streaming_thinking.clear();
+		self.streaming_cache = None;
 		self.loader.set_message("Thinking...");
 		self.loader.start();
 	}
@@ -198,6 +219,7 @@ impl ChatComponent {
 		self.is_streaming = false;
 		self.streaming_text.clear();
 		self.streaming_thinking.clear();
+		self.streaming_cache = None;
 		self.loader.stop();
 		self.tool_executing = None;
 	}
@@ -211,6 +233,7 @@ impl ChatComponent {
 		self.is_streaming = false;
 		self.streaming_text.clear();
 		self.streaming_thinking.clear();
+		self.streaming_cache = None;
 		self.loader.stop();
 		self.tool_executing = None;
 		// Populate tool_name_cache for ToolUse blocks.
@@ -255,9 +278,11 @@ impl ChatComponent {
 		self.items.clear();
 		self.streaming_text.clear();
 		self.streaming_thinking.clear();
+		self.streaming_cache = None;
 		self.is_streaming = false;
 		self.scroll_offset = 0;
 		self.render_cache.borrow_mut().clear();
+		self.item_render_cache.borrow_mut().clear();
 		self.tool_name_cache.clear();
 		self.loader.stop();
 		self.tool_executing = None;
@@ -269,6 +294,7 @@ impl ChatComponent {
 	pub fn toggle_tool_expansion(&mut self) {
 		self.tools_expanded = !self.tools_expanded;
 		self.render_cache.borrow_mut().clear();
+		self.item_render_cache.borrow_mut().clear();
 	}
 
 	/// Advance spinner animation. Returns true if re-render needed.
@@ -337,7 +363,17 @@ impl ChatComponent {
 		)
 	}
 
-	fn render_user_message(&self, msg: &UserMessage, width: u16) -> Vec<String> {
+	fn render_user_message(&self, msg: &UserMessage, width: u16, item_idx: usize) -> Vec<String> {
+		// Check cache.
+		{
+			let cache = self.item_render_cache.borrow();
+			if let Some(cached) = cache.get(&item_idx)
+				&& cached.width == width
+			{
+				return cached.lines.clone();
+			}
+		}
+
 		let w = width as usize;
 		let mut lines = Vec::new();
 		lines.push(String::new()); // blank separator
@@ -360,10 +396,38 @@ impl ChatComponent {
 
 		// Bottom padding line with background.
 		lines.push(self.theme.bg(ThemeBg::UserMessageBg, &" ".repeat(w)));
+
+		// Store in cache.
+		self
+			.item_render_cache
+			.borrow_mut()
+			.insert(item_idx, RenderedLines {
+				text_len: 0,
+				width,
+				expanded: false,
+				lines: lines.clone(),
+			});
+
 		lines
 	}
 
-	fn render_assistant_message(&self, msg: &AssistantMessage, width: u16) -> Vec<String> {
+	fn render_assistant_message(
+		&self,
+		msg: &AssistantMessage,
+		width: u16,
+		item_idx: usize,
+	) -> Vec<String> {
+		// Check cache.
+		{
+			let cache = self.item_render_cache.borrow();
+			if let Some(cached) = cache.get(&item_idx)
+				&& cached.width == width
+				&& cached.expanded == self.tools_expanded
+			{
+				return cached.lines.clone();
+			}
+		}
+
 		let mut lines = Vec::new();
 		lines.push(String::new()); // blank separator
 		for block in &msg.content {
@@ -429,6 +493,26 @@ impl ChatComponent {
 				},
 			}
 		}
+
+		// Only cache if the message has no pending ToolUse blocks (whose
+		// results haven't arrived yet). Once all tool results exist the
+		// rendered output is stable and safe to cache.
+		let has_pending_tools = msg
+			.content
+			.iter()
+			.any(|b| matches!(b, ContentBlock::ToolUse { id, .. } if !self.has_tool_result(id)));
+		if !has_pending_tools {
+			self
+				.item_render_cache
+				.borrow_mut()
+				.insert(item_idx, RenderedLines {
+					text_len: 0,
+					width,
+					expanded: self.tools_expanded,
+					lines: lines.clone(),
+				});
+		}
+
 		lines
 	}
 
@@ -459,7 +543,8 @@ impl ChatComponent {
 		self
 			.render_cache
 			.borrow_mut()
-			.insert(msg.tool_use_id.clone(), CachedRender {
+			.insert(msg.tool_use_id.clone(), RenderedLines {
+				text_len: 0,
 				expanded: self.tools_expanded,
 				width,
 				lines: lines.clone(),
@@ -586,11 +671,11 @@ impl Component for ChatComponent {
 		while i < item_count {
 			match &self.items[i] {
 				ChatItem::Message(Message::User(u)) => {
-					lines.extend(self.render_user_message(u, width));
+					lines.extend(self.render_user_message(u, width, i));
 					i += 1;
 				},
 				ChatItem::Message(Message::Assistant(a)) => {
-					lines.extend(self.render_assistant_message(a, width));
+					lines.extend(self.render_assistant_message(a, width, i));
 					i += 1;
 				},
 				ChatItem::Message(Message::ToolResult(_)) => {
@@ -653,10 +738,24 @@ impl Component for ChatComponent {
 				}
 				if !self.streaming_text.is_empty() {
 					lines.push(String::new());
-					let md_theme = self.theme.markdown_theme(self.symbols.clone());
-					let mut md = Markdown::new(&self.streaming_text, 1, 0, md_theme, None, 2);
-					let rendered = md.render(width);
-					lines.extend(rendered);
+					let cache_valid = self
+						.streaming_cache
+						.as_ref()
+						.is_some_and(|c| c.text_len == self.streaming_text.len() && c.width == width);
+					if !cache_valid {
+						let md_theme = self.theme.markdown_theme(self.symbols.clone());
+						let mut md = Markdown::new(&self.streaming_text, 1, 0, md_theme, None, 2);
+						let rendered = md.render(width);
+						self.streaming_cache = Some(RenderedLines {
+							text_len: self.streaming_text.len(),
+							width,
+							expanded: false,
+							lines: rendered,
+						});
+					}
+					if let Some(ref cache) = self.streaming_cache {
+						lines.extend_from_slice(&cache.lines);
+					}
 				}
 				// Show tool execution spinner after streaming text
 				if self.tool_executing.is_some() {
