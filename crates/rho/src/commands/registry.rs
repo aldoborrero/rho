@@ -109,6 +109,13 @@ pub const COMMANDS: &[SlashCommand] = &[
 		],
 	},
 	SlashCommand {
+		name:        "profile",
+		aliases:     &["prof"],
+		description: "Show streaming performance profile (last N seconds)",
+		args_hint:   Some("[seconds] [path]"),
+		subcommands: &[],
+	},
+	SlashCommand {
 		name:        "debug",
 		aliases:     &[],
 		description: "Dump debug info",
@@ -303,6 +310,21 @@ mod tests {
 	#[test]
 	fn parse_export_with_path() {
 		assert_eq!(parse_command("/export /tmp/out.md"), Some(("export", "/tmp/out.md")));
+	}
+
+	#[test]
+	fn parse_profile() {
+		assert_eq!(parse_command("/profile"), Some(("profile", "")));
+	}
+
+	#[test]
+	fn parse_profile_with_seconds() {
+		assert_eq!(parse_command("/profile 5"), Some(("profile", "5")));
+	}
+
+	#[test]
+	fn parse_prof_alias() {
+		assert_eq!(parse_command("/prof"), Some(("profile", "")));
 	}
 
 	#[test]

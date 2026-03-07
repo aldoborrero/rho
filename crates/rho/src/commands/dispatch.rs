@@ -34,6 +34,7 @@ pub async fn execute_command(
 		"plan" => Ok(handlers::plan::cmd_plan()),
 		"export" => Ok(handlers::session::cmd_export()),
 		"config" => Ok(handlers::config_cmd::cmd_config(ctx)),
+		"profile" => Ok(handlers::profile::cmd_profile(ctx)),
 		"debug" => Ok(handlers::session::cmd_debug(ctx)),
 		"fork" => Ok(handlers::session::cmd_fork()),
 		_ => {
@@ -508,6 +509,47 @@ mod tests {
 		};
 		let result = execute_command(&ctx, None).await.unwrap();
 		assert!(matches!(result, CommandResult::Fork));
+	}
+
+	#[tokio::test]
+	async fn execute_profile_no_samples() {
+		let session = SessionManager::in_memory();
+		let settings = test_settings();
+		let tools = ToolRegistry::new();
+		let ctx = CommandContext {
+			name:     "profile",
+			args:     "",
+			session:  &session,
+			settings: &settings,
+			model:    "test-model",
+			tools:    &tools,
+		};
+		let result = execute_command(&ctx, None).await.unwrap();
+		match result {
+			CommandResult::Message(text) => {
+				assert!(text.contains("No profiling samples"));
+			},
+			_ => panic!("Expected CommandResult::Message"),
+		}
+	}
+
+	#[tokio::test]
+	async fn execute_profile_default_seconds() {
+		let session = SessionManager::in_memory();
+		let settings = test_settings();
+		let tools = ToolRegistry::new();
+		// Test with empty args (defaults to 10.0 seconds).
+		let ctx = CommandContext {
+			name:     "profile",
+			args:     "",
+			session:  &session,
+			settings: &settings,
+			model:    "test-model",
+			tools:    &tools,
+		};
+		let result = execute_command(&ctx, None).await.unwrap();
+		// With no samples, this returns the "no samples" message.
+		assert!(matches!(result, CommandResult::Message(_)));
 	}
 
 	#[tokio::test]

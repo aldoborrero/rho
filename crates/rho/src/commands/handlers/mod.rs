@@ -5,4 +5,5 @@ pub mod help;
 pub mod model;
 pub mod navigation;
 pub mod plan;
+pub mod profile;
 pub mod session;
