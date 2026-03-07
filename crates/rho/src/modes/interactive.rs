@@ -7,6 +7,7 @@ use rho_agent::{
 	agent_loop::{AgentConfig, ThinkingLevel},
 	events::{AgentEvent, AgentOutcome},
 };
+use rho_tools::prof::profile_region;
 use rho_tui::{
 	Terminal,
 	component::{Component, InputResult},
@@ -51,6 +52,10 @@ enum AppEvent {
 	/// Bang command completed.
 	BangDone { exit_code: Option<i32>, cancelled: bool },
 }
+
+/// Tick interval in milliseconds for spinner animation and deferred render
+/// flushing.
+const TICK_INTERVAL_MS: u64 = 50;
 
 /// Map a tool name to a human-readable phase label for the status line.
 fn generate_tool_phase(tool_name: &str) -> String {
@@ -491,6 +496,8 @@ pub async fn run_interactive(
 	let mut bang_cancel: Option<tokio::sync::oneshot::Sender<()>> = None;
 	// Whether the current bang command should be excluded from context.
 	let mut bang_exclude_from_context: bool = false;
+	// Flag set by high-frequency delta events to defer rendering to the next tick.
+	let mut render_deferred = false;
 	// Queues for injecting messages into the running agent loop.
 	// Steering messages interrupt the current tool batch; follow-up messages
 	// start a new outer-loop iteration after the inner loop exhausts.
@@ -539,8 +546,9 @@ pub async fn run_interactive(
 	app.tui.request_render();
 	app.render_to_tui(&mut terminal)?;
 
-	// Tick interval for spinner animation.
-	let mut tick_interval = tokio::time::interval(std::time::Duration::from_millis(80));
+	// Tick interval for spinner animation and deferred render flushing.
+	let mut tick_interval =
+		tokio::time::interval(std::time::Duration::from_millis(TICK_INTERVAL_MS));
 	tick_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
 	// Main event loop.
@@ -549,13 +557,16 @@ pub async fn run_interactive(
 			event = rx.recv() => event,
 			_ = tick_interval.tick() => Some(AppEvent::Tick),
 		};
+		let _event_guard = profile_region("event_dispatch");
 		match event {
 			Some(AppEvent::Tick) => {
+				let _guard = profile_region("tick_render");
 				let needs_render = app.chat.tick();
-				if app.status.is_working() {
+				if app.status.is_working() || render_deferred {
 					app.update_status_border(terminal.columns());
 					app.tui.request_render();
 					app.render_to_tui(&mut terminal)?;
+					render_deferred = false;
 				} else if needs_render {
 					app.tui.request_render();
 					app.render_to_tui(&mut terminal)?;
@@ -844,17 +855,23 @@ pub async fn run_interactive(
 						}
 					},
 					AgentEvent::TextDelta(text) => {
+						let _guard = profile_region("agent_text_delta");
 						if matches!(mode, AppMode::Streaming) {
 							app.chat.append_text(&text);
+							render_deferred = true;
 						}
+						continue;
 					},
 					AgentEvent::MessageStart => {
 						// Assistant message stream beginning — no TUI action needed.
 					},
 					AgentEvent::ThinkingDelta(text) => {
+						let _guard = profile_region("agent_thinking_delta");
 						if matches!(mode, AppMode::Streaming) {
 							app.chat.append_thinking(&text);
+							render_deferred = true;
 						}
+						continue;
 					},
 					AgentEvent::ToolCallStart { name, .. } => {
 						if matches!(mode, AppMode::Streaming) {
@@ -865,7 +882,9 @@ pub async fn run_interactive(
 					AgentEvent::ToolExecutionUpdate { content, .. } => {
 						if matches!(mode, AppMode::Streaming) {
 							app.chat.append_tool_output(&content);
+							render_deferred = true;
 						}
+						continue;
 					},
 					AgentEvent::ToolCallResult { id, content, is_error, .. } => {
 						app.status.set_working_phase("Thinking");
@@ -999,7 +1018,9 @@ pub async fn run_interactive(
 			Some(AppEvent::BangChunk(chunk)) => {
 				if matches!(mode, AppMode::BangRunning) {
 					app.chat.append_bang_output(&chunk);
+					render_deferred = true;
 				}
+				continue;
 			},
 			Some(AppEvent::BangDone { exit_code, cancelled }) => {
 				if matches!(mode, AppMode::BangRunning) {
@@ -1022,9 +1043,13 @@ pub async fn run_interactive(
 			None => break, // Channel closed.
 		}
 
-		// Re-render after every event.
-		app.tui.request_render();
-		app.render_to_tui(&mut terminal)?;
+		// Re-render after every non-deferred event.
+		{
+			let _guard = profile_region("render_to_tui");
+			app.tui.request_render();
+			app.render_to_tui(&mut terminal)?;
+			render_deferred = false;
+		}
 	}
 
 	// Signal the terminal reader thread to stop.
