@@ -70,9 +70,9 @@ impl rho_agent::tools::Tool for LuaTool {
 				.map_err(|e| {
 					anyhow::anyhow!("[ext:{}] failed to create update fn: {e}", self.ext_id)
 				})?;
-			ctx_table.set("update", update_fn).map_err(|e| {
-				anyhow::anyhow!("[ext:{}] failed to set update fn: {e}", self.ext_id)
-			})?;
+			ctx_table
+				.set("update", update_fn)
+				.map_err(|e| anyhow::anyhow!("[ext:{}] failed to set update fn: {e}", self.ext_id))?;
 		}
 
 		match func.call::<Table>((input_val, ctx_table)) {

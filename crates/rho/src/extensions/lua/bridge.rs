@@ -52,7 +52,9 @@ pub fn create_api_table(lua: &Lua, regs: Arc<Mutex<Registrations>>) -> Result<Ta
 			let execute: Function = def.get("execute")?;
 			let handler_key = lua.create_registry_value(execute)?;
 
-			let concurrency_str: Option<String> = def.get::<Option<String>>("concurrency")?.map(|s| s.to_lowercase());
+			let concurrency_str: Option<String> = def
+				.get::<Option<String>>("concurrency")?
+				.map(|s| s.to_lowercase());
 			let concurrency = match concurrency_str.as_deref() {
 				Some("exclusive") => rho_agent::tools::Concurrency::Exclusive,
 				Some("shared") | None => rho_agent::tools::Concurrency::Shared,
@@ -103,7 +105,8 @@ pub fn create_api_table(lua: &Lua, regs: Arc<Mutex<Registrations>>) -> Result<Ta
 		api.set("on_after_tool_call", on_after)?;
 	}
 
-	// api:on_before_context(fn(messages) -> { append_system_prompt?, inject_messages? })
+	// api:on_before_context(fn(messages) -> { append_system_prompt?,
+	// inject_messages? })
 	{
 		let regs = regs.clone();
 		let on_before_ctx = lua.create_function(move |lua, func: Function| {

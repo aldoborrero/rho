@@ -160,8 +160,7 @@ impl Extension for LuaExtension {
 			None
 		};
 
-		let before_ctx_key = if let Some(ref key) = self.runtime.registrations.hooks.before_context
-		{
+		let before_ctx_key = if let Some(ref key) = self.runtime.registrations.hooks.before_context {
 			match Self::dup_registry_key(&lua_guard, key) {
 				Ok(k) => Some(k),
 				Err(e) => {

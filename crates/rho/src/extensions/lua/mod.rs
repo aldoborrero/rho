@@ -524,18 +524,12 @@ end
 		let chunks: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
 			std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
 		let chunks_clone = chunks.clone();
-		let on_update: rho_agent::tools::OnToolUpdate =
-			std::sync::Arc::new(move |text: &str| {
-				chunks_clone.lock().unwrap().push(text.to_owned());
-			});
+		let on_update: rho_agent::tools::OnToolUpdate = std::sync::Arc::new(move |text: &str| {
+			chunks_clone.lock().unwrap().push(text.to_owned());
+		});
 
 		let result = tools[0]
-			.execute(
-				&serde_json::json!({}),
-				Path::new("/tmp"),
-				&cancel,
-				Some(&on_update),
-			)
+			.execute(&serde_json::json!({}), Path::new("/tmp"), &cancel, Some(&on_update))
 			.await
 			.unwrap();
 
