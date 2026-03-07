@@ -561,15 +561,12 @@ pub async fn run_interactive(
 		match event {
 			Some(AppEvent::Tick) => {
 				let _guard = profile_region("tick_render");
-				let needs_render = app.chat.tick();
-				if app.status.is_working() || render_deferred {
+				let spinner_changed = app.chat.tick();
+				if render_deferred || spinner_changed {
 					app.update_status_border(terminal.columns());
 					app.tui.request_render();
 					app.render_to_tui(&mut terminal)?;
 					render_deferred = false;
-				} else if needs_render {
-					app.tui.request_render();
-					app.render_to_tui(&mut terminal)?;
 				}
 				continue;
 			},
