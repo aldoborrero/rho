@@ -29,6 +29,7 @@ pub fn discover_and_load(
 		}
 
 		match &manifest.runtime {
+			#[cfg(feature = "lua")]
 			Some(rc) if rc.engine == "lua" => {
 				let ext_dir = path.parent().unwrap_or(Path::new("."));
 				match super::lua::load_lua_extension(

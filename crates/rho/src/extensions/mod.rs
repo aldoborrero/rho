@@ -1,4 +1,5 @@
 pub mod discovery;
+#[cfg(feature = "lua")]
 pub mod lua;
 pub mod manager;
 #[cfg(test)]
