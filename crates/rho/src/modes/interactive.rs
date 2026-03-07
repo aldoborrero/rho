@@ -552,497 +552,551 @@ pub async fn run_interactive(
 	tick_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
 	// Main event loop.
-	loop {
-		let event = tokio::select! {
+	//
+	// Uses event draining to coalesce multiple events into a single render,
+	// similar to oh-my-pi's `process.nextTick()` batching. After processing
+	// the first event, all additional pending events are drained via
+	// `try_recv()` before a single render pass.
+	'main: loop {
+		let first_event = tokio::select! {
 			event = rx.recv() => event,
 			_ = tick_interval.tick() => Some(AppEvent::Tick),
 		};
 		let _event_guard = profile_region("event_dispatch");
-		match event {
-			Some(AppEvent::Tick) => {
-				let _guard = profile_region("tick_render");
-				let spinner_changed = app.chat.tick();
-				if render_deferred || spinner_changed {
-					app.update_status_border(terminal.columns());
-					app.tui.request_render();
-					app.render_to_tui(&mut terminal)?;
-					render_deferred = false;
-				}
-				continue;
-			},
-			Some(AppEvent::Terminal(event)) => match event {
-				rho_tui::TerminalEvent::Input(ref data) => {
-					// Model selector: intercept all input when active.
-					// When open during streaming, Ctrl+C/Esc first dismisses the
-					// selector; a second press cancels the agent.
-					if let Some(ref mut selector) = app.model_selector {
-						match selector.handle_input(data) {
-							InputResult::Submit(value) => {
-								app.hide_model_selector();
-								apply_model_change(
-									&value,
-									&mut model,
-									&mut api_key,
-									&mut app,
-									&terminal,
-									&registry,
-									&settings,
-									&models_config,
-								);
-							},
-							InputResult::Consumed => {
-								if selector.is_cancelled() {
-									app.hide_model_selector();
-								}
-							},
-							InputResult::Ignored => {},
-						}
-						app.tui.request_render();
-						app.render_to_tui(&mut terminal)?;
-						continue;
-					}
-					// Ctrl+C
-					if data == "\x03" {
-						if matches!(mode, AppMode::Streaming) {
-							if let Some(partial) = cancel_streaming(
-								&mut mode,
-								&mut app,
-								&terminal,
-								&mut agent_generation,
-								&mut agent_cancel,
-							) {
-								session.append(Message::Assistant(partial)).await?;
-							}
-						} else if matches!(mode, AppMode::BangRunning) {
-							cancel_bang(&mut mode, &mut app, &mut bang_cancel);
-						} else {
-							break;
-						}
-					}
-					// Ctrl+D
-					else if data == "\x04" {
-						break;
-					}
-					// Ctrl+L: clear chat display.
-					else if data == "\x0c" {
-						app.chat.clear();
-					}
-					// Ctrl+O: toggle tool output expansion.
-					else if data == "\x0f" {
-						app.chat.toggle_tool_expansion();
-					}
-					// Escape — cancel active operation (bypasses editor).
-					else if data == "\x1b" && matches!(mode, AppMode::Streaming | AppMode::BangRunning)
-					{
-						if matches!(mode, AppMode::Streaming) {
-							if let Some(partial) = cancel_streaming(
-								&mut mode,
-								&mut app,
-								&terminal,
-								&mut agent_generation,
-								&mut agent_cancel,
-							) {
-								session.append(Message::Assistant(partial)).await?;
-							}
-						} else {
-							cancel_bang(&mut mode, &mut app, &mut bang_cancel);
-						}
-					}
-					// Forward other input to the app (routes through input
-					// listeners then to the editor).
-					else {
-						let result = app.handle_input(data);
-						app.sync_editor_border_color();
-						if let InputResult::Submit(text) = result {
-							// Block submissions while a bang command is running.
-							if matches!(mode, AppMode::BangRunning) {
-								continue;
-							}
 
-							// Handle submission inline.
-							app.editor.add_to_history(&text);
+		// Handle tick separately — ticks only come from `tokio::select!`,
+		// never from the channel, so they can't be coalesced.
+		if matches!(first_event, Some(AppEvent::Tick)) {
+			let _guard = profile_region("tick_render");
+			let spinner_changed = app.chat.tick();
+			if render_deferred || spinner_changed {
+				app.update_status_border(terminal.columns());
+				app.tui.request_render();
+				app.render_to_tui(&mut terminal)?;
+				render_deferred = false;
+			}
+			continue 'main;
+		}
 
-							match route_input(&text) {
-								InputAction::Empty => {},
-								InputAction::SlashCommand { name, args } => {
-									let ctx = CommandContext {
-										name,
-										args,
-										session: &session,
-										settings: &settings,
-										model: &model.id,
-										tools: &tools,
-									};
-									let result =
-										crate::commands::execute_command(&ctx, Some(&ext_manager)).await?;
-									if matches!(
-										apply_command_result(
-											result,
-											&mut session,
-											&mut app,
-											&terminal,
+		// Process the first event and drain any additional pending events
+		// before rendering. This coalesces bursts of events (e.g.
+		// ToolCallResult + MessageComplete + TurnEnd arriving together)
+		// into a single render pass.
+		let mut needs_render = false;
+		let mut current_event = first_event;
+
+		'drain: loop {
+			match current_event {
+				Some(AppEvent::Tick) => {
+					// Tick arrived via try_recv (shouldn't happen, but handle
+					// gracefully): just advance the spinner.
+					app.chat.tick();
+				},
+				Some(AppEvent::Terminal(ref event)) => {
+					needs_render = true;
+					match event {
+						rho_tui::TerminalEvent::Input(data) => {
+							// Model selector: intercept all input when active.
+							// When open during streaming, Ctrl+C/Esc first dismisses the
+							// selector; a second press cancels the agent.
+							if let Some(ref mut selector) = app.model_selector {
+								match selector.handle_input(data) {
+									InputResult::Submit(value) => {
+										app.hide_model_selector();
+										apply_model_change(
+											&value,
 											&mut model,
 											&mut api_key,
-											&mut settings,
+											&mut app,
+											&terminal,
 											&registry,
-											&models_config,
-											cli,
-										)
-										.await?,
-										ApplyOutcome::Exit
-									) {
-										break;
-									}
-								},
-								InputAction::UnknownCommand(cmd) => {
-									show_chat_message(
-										&mut app,
-										&format!(
-											"Unknown command: {cmd}. Type /help for available commands."
-										),
-									);
-								},
-								InputAction::BangCommand { cmd, exclude_from_context } => {
-									// Show the user's command in chat.
-									app.chat.add_message(Message::User(UserMessage {
-										content: format!(
-											"{}{}",
-											if exclude_from_context { "!!" } else { "!" },
-											cmd
-										),
-									}));
-
-									// Start a streaming bang output block.
-									app.chat.start_bang(cmd);
-									mode = AppMode::BangRunning;
-									bang_exclude_from_context = exclude_from_context;
-
-									// Spawn background execution with cancellation support.
-									let chunk_tx = tx.clone();
-									let done_tx = tx.clone();
-									let bang_tools = tools.clone();
-									let cmd_owned = cmd.to_owned();
-									let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
-									bang_cancel = Some(cancel_tx);
-									tokio::spawn(async move {
-										let shell_fut = crate::commands::execute_bang_streaming(
-											&cmd_owned,
-											&bang_tools,
-											move |chunk| {
-												// try_send avoids blocking a tokio worker thread
-												// if the channel is full; chunks are dropped.
-												let _ = chunk_tx.try_send(AppEvent::BangChunk(chunk));
-											},
-										);
-										let result = tokio::select! {
-											r = shell_fut => r,
-											_ = cancel_rx => {
-												// Cancelled by Ctrl+C — future is dropped,
-												// which cleans up the shell process.
-												Ok(crate::commands::BangResult {
-													is_error: true,
-													exit_code: None,
-													cancelled: true,
-												})
-											}
-										};
-										let (exit_code, cancelled) = match result {
-											Ok(r) => (r.exit_code, r.cancelled),
-											Err(_) => (None, false),
-										};
-										let _ = done_tx
-											.send(AppEvent::BangDone { exit_code, cancelled })
-											.await;
-									});
-								},
-								InputAction::UserMessage(text) => {
-									let user_msg = Message::User(UserMessage { content: text.to_owned() });
-
-									if matches!(mode, AppMode::Streaming) {
-										// Don't add to chat yet — show in banner until agent processes it.
-										session.append(user_msg.clone()).await?;
-										steering_queue
-											.lock()
-											.unwrap_or_else(|e| e.into_inner())
-											.push_back(user_msg);
-										app.queued_messages.push(text.to_owned());
-									} else {
-										app.chat.add_message(user_msg.clone());
-										// Idle — existing behavior: spawn new agent.
-										session.append(user_msg).await?;
-
-										mode = AppMode::Streaming;
-										app.chat.start_streaming();
-										app.status.clear_work_status();
-										app.status.start_working();
-										app.update_status_border(terminal.columns());
-
-										// Clear any stale messages from previous runs.
-										steering_queue
-											.lock()
-											.unwrap_or_else(|e| e.into_inner())
-											.clear();
-										follow_up_queue
-											.lock()
-											.unwrap_or_else(|e| e.into_inner())
-											.clear();
-
-										let sq = std::sync::Arc::clone(&steering_queue);
-										let sf: Option<rho_agent::tools::MessageFetcher> =
-											Some(std::sync::Arc::new(move || {
-												let mut q = sq.lock().unwrap_or_else(|e| e.into_inner());
-												q.pop_front().into_iter().collect()
-											}));
-										let fq = std::sync::Arc::clone(&follow_up_queue);
-										let ff: Option<rho_agent::tools::MessageFetcher> =
-											Some(std::sync::Arc::new(move || {
-												let mut q = fq.lock().unwrap_or_else(|e| e.into_inner());
-												q.pop_front().into_iter().collect()
-											}));
-
-										agent_cancel = Some(spawn_agent(
-											&model,
-											session.messages(),
-											&tools,
-											&system_prompt,
 											&settings,
-											&api_key,
-											&tx,
-											&mut agent_generation,
-											sf,
-											ff,
-											ext_hooks.clone(),
-										)?);
+											&models_config,
+										);
+									},
+									InputResult::Consumed => {
+										if selector.is_cancelled() {
+											app.hide_model_selector();
+										}
+									},
+									InputResult::Ignored => {},
+								}
+							}
+							// Ctrl+C
+							else if data == "\x03" {
+								if matches!(mode, AppMode::Streaming) {
+									if let Some(partial) = cancel_streaming(
+										&mut mode,
+										&mut app,
+										&terminal,
+										&mut agent_generation,
+										&mut agent_cancel,
+									) {
+										session.append(Message::Assistant(partial)).await?;
 									}
-								},
+								} else if matches!(mode, AppMode::BangRunning) {
+									cancel_bang(&mut mode, &mut app, &mut bang_cancel);
+								} else {
+									break 'main;
+								}
 							}
-						} else if data == "\x1b" && matches!(result, InputResult::Ignored) {
-							// Esc in idle — editor didn't consume (no autocomplete).
-							let text = app.editor.get_text();
-							if !text.trim().is_empty() && text.trim_start().starts_with('!') {
-								// Exit bash-mode input.
-								app.editor.set_text("");
+							// Ctrl+D
+							else if data == "\x04" {
+								break 'main;
+							}
+							// Ctrl+L: clear chat display.
+							else if data == "\x0c" {
+								app.chat.clear();
+							}
+							// Ctrl+O: toggle tool output expansion.
+							else if data == "\x0f" {
+								app.chat.toggle_tool_expansion();
+							}
+							// Escape — cancel active operation (bypasses editor).
+							else if data == "\x1b"
+								&& matches!(mode, AppMode::Streaming | AppMode::BangRunning)
+							{
+								if matches!(mode, AppMode::Streaming) {
+									if let Some(partial) = cancel_streaming(
+										&mut mode,
+										&mut app,
+										&terminal,
+										&mut agent_generation,
+										&mut agent_cancel,
+									) {
+										session.append(Message::Assistant(partial)).await?;
+									}
+								} else {
+									cancel_bang(&mut mode, &mut app, &mut bang_cancel);
+								}
+							}
+							// Forward other input to the app (routes through input
+							// listeners then to the editor).
+							else {
+								let result = app.handle_input(data);
 								app.sync_editor_border_color();
+								if let InputResult::Submit(text) = result {
+									if matches!(mode, AppMode::BangRunning) {
+										// Drop — submissions are blocked while a bang
+										// command is running.
+									} else {
+										// Handle submission inline.
+										app.editor.add_to_history(&text);
+
+										match route_input(&text) {
+											InputAction::Empty => {},
+											InputAction::SlashCommand { name, args } => {
+												let ctx = CommandContext {
+													name,
+													args,
+													session: &session,
+													settings: &settings,
+													model: &model.id,
+													tools: &tools,
+												};
+												let result =
+													crate::commands::execute_command(&ctx, Some(&ext_manager))
+														.await?;
+												if matches!(
+													apply_command_result(
+														result,
+														&mut session,
+														&mut app,
+														&terminal,
+														&mut model,
+														&mut api_key,
+														&mut settings,
+														&registry,
+														&models_config,
+														cli,
+													)
+													.await?,
+													ApplyOutcome::Exit
+												) {
+													break 'main;
+												}
+											},
+											InputAction::UnknownCommand(cmd) => {
+												show_chat_message(
+													&mut app,
+													&format!(
+														"Unknown command: {cmd}. Type /help for available \
+														 commands."
+													),
+												);
+											},
+											InputAction::BangCommand { cmd, exclude_from_context } => {
+												// Show the user's command in chat.
+												app.chat.add_message(Message::User(UserMessage {
+													content: format!(
+														"{}{}",
+														if exclude_from_context { "!!" } else { "!" },
+														cmd
+													),
+												}));
+
+												// Start a streaming bang output block.
+												app.chat.start_bang(cmd);
+												mode = AppMode::BangRunning;
+												bang_exclude_from_context = exclude_from_context;
+
+												// Spawn background execution with cancellation support.
+												let chunk_tx = tx.clone();
+												let done_tx = tx.clone();
+												let bang_tools = tools.clone();
+												let cmd_owned = cmd.to_owned();
+												let (cancel_tx, cancel_rx) =
+													tokio::sync::oneshot::channel::<()>();
+												bang_cancel = Some(cancel_tx);
+												tokio::spawn(async move {
+													let shell_fut = crate::commands::execute_bang_streaming(
+														&cmd_owned,
+														&bang_tools,
+														move |chunk| {
+															// try_send avoids blocking a tokio worker
+															// thread if the channel is full; chunks are
+															// dropped.
+															let _ = chunk_tx.try_send(AppEvent::BangChunk(chunk));
+														},
+													);
+													let result = tokio::select! {
+														r = shell_fut => r,
+														_ = cancel_rx => {
+															// Cancelled by Ctrl+C — future is dropped,
+															// which cleans up the shell process.
+															Ok(crate::commands::BangResult {
+																is_error: true,
+																exit_code: None,
+																cancelled: true,
+															})
+														}
+													};
+													let (exit_code, cancelled) = match result {
+														Ok(r) => (r.exit_code, r.cancelled),
+														Err(_) => (None, false),
+													};
+													let _ = done_tx
+														.send(AppEvent::BangDone { exit_code, cancelled })
+														.await;
+												});
+											},
+											InputAction::UserMessage(text) => {
+												let user_msg =
+													Message::User(UserMessage { content: text.to_owned() });
+
+												if matches!(mode, AppMode::Streaming) {
+													// Don't add to chat yet — show in banner until agent
+													// processes it.
+													session.append(user_msg.clone()).await?;
+													steering_queue
+														.lock()
+														.unwrap_or_else(|e| e.into_inner())
+														.push_back(user_msg);
+													app.queued_messages.push(text.to_owned());
+												} else {
+													app.chat.add_message(user_msg.clone());
+													// Idle — existing behavior: spawn new agent.
+													session.append(user_msg).await?;
+
+													mode = AppMode::Streaming;
+													app.chat.start_streaming();
+													app.status.clear_work_status();
+													app.status.start_working();
+													app.update_status_border(terminal.columns());
+
+													// Clear any stale messages from previous runs.
+													steering_queue
+														.lock()
+														.unwrap_or_else(|e| e.into_inner())
+														.clear();
+													follow_up_queue
+														.lock()
+														.unwrap_or_else(|e| e.into_inner())
+														.clear();
+
+													let sq = std::sync::Arc::clone(&steering_queue);
+													let sf: Option<rho_agent::tools::MessageFetcher> =
+														Some(std::sync::Arc::new(move || {
+															let mut q =
+																sq.lock().unwrap_or_else(|e| e.into_inner());
+															q.pop_front().into_iter().collect()
+														}));
+													let fq = std::sync::Arc::clone(&follow_up_queue);
+													let ff: Option<rho_agent::tools::MessageFetcher> =
+														Some(std::sync::Arc::new(move || {
+															let mut q =
+																fq.lock().unwrap_or_else(|e| e.into_inner());
+															q.pop_front().into_iter().collect()
+														}));
+
+													agent_cancel = Some(spawn_agent(
+														&model,
+														session.messages(),
+														&tools,
+														&system_prompt,
+														&settings,
+														&api_key,
+														&tx,
+														&mut agent_generation,
+														sf,
+														ff,
+														ext_hooks.clone(),
+													)?);
+												}
+											},
+										}
+									}
+								} else if data == "\x1b" && matches!(result, InputResult::Ignored) {
+									// Esc in idle — editor didn't consume (no autocomplete).
+									let text = app.editor.get_text();
+									if !text.trim().is_empty() && text.trim_start().starts_with('!') {
+										// Exit bash-mode input.
+										app.editor.set_text("");
+										app.sync_editor_border_color();
+									}
+								}
 							}
-						}
+						},
+						rho_tui::TerminalEvent::Resize(cols, _) => {
+							app.update_status_border(*cols);
+							app.tui.request_render_force();
+						},
+						rho_tui::TerminalEvent::Paste(text) => {
+							// Always accept paste so the user can type ahead while streaming.
+							let bracketed = format!("\x1b[200~{text}\x1b[201~");
+							app.handle_input(&bracketed);
+						},
 					}
 				},
-				rho_tui::TerminalEvent::Resize(cols, _) => {
-					app.update_status_border(cols);
-					app.tui.request_render_force();
-				},
-				rho_tui::TerminalEvent::Paste(ref text) => {
-					// Always accept paste so the user can type ahead while streaming.
-					let bracketed = format!("\x1b[200~{text}\x1b[201~");
-					app.handle_input(&bracketed);
-				},
-			},
-			Some(AppEvent::Agent(tagged)) => {
-				// Drop events from old (stale) agent generations.
-				if tagged.generation != agent_generation {
-					continue;
-				}
-				match tagged.event {
-					AgentEvent::AgentStart => {
-						// Agent loop starting — no TUI action needed.
-					},
-					AgentEvent::TurnStart { .. } => {
-						if matches!(mode, AppMode::Streaming) {
-							app.status.set_working_phase("Thinking");
-						}
-					},
-					AgentEvent::TextDelta(text) => {
-						let _guard = profile_region("agent_text_delta");
-						if matches!(mode, AppMode::Streaming) {
-							app.chat.append_text(&text);
-							render_deferred = true;
-						}
-						continue;
-					},
-					AgentEvent::MessageStart => {
-						// Assistant message stream beginning — no TUI action needed.
-					},
-					AgentEvent::ThinkingDelta(text) => {
-						let _guard = profile_region("agent_thinking_delta");
-						if matches!(mode, AppMode::Streaming) {
-							app.chat.append_thinking(&text);
-							render_deferred = true;
-						}
-						continue;
-					},
-					AgentEvent::ToolCallStart { name, .. } => {
-						if matches!(mode, AppMode::Streaming) {
-							app.status.set_working_phase(&generate_tool_phase(&name));
-							app.chat.set_tool_executing(Some(name));
-						}
-					},
-					AgentEvent::ToolExecutionUpdate { content, .. } => {
-						if matches!(mode, AppMode::Streaming) {
-							app.chat.append_tool_output(&content);
-							render_deferred = true;
-						}
-						continue;
-					},
-					AgentEvent::ToolCallResult { id, content, is_error, .. } => {
-						app.status.set_working_phase("Thinking");
-						app.chat.set_tool_executing(None);
-						let tool_msg =
-							Message::ToolResult(ToolResultMessage { tool_use_id: id, content, is_error });
-						app.chat.add_message(tool_msg.clone());
-						session.append(tool_msg).await?;
-						// Start streaming for next LLM turn.
-						app.chat.start_streaming();
-					},
-					AgentEvent::TurnEnd { .. } => {
-						// Turn completed — no TUI action needed.
-					},
-					AgentEvent::MessageComplete(message) => {
-						if let Some(ref usage) = message.usage {
-							app.status
-								.set_usage(usage.input_tokens, usage.output_tokens);
-							app.update_status_border(terminal.columns());
-						}
-						let message = Arc::unwrap_or_clone(message);
-						session.append(Message::Assistant(message.clone())).await?;
-						app.chat
-							.finish_streaming_with_message(Message::Assistant(message));
-					},
-					AgentEvent::SteeringProcessed { messages } => {
-						// Agent consumed steering — move from banner to chat.
-						for msg in &messages {
-							if let Some(pos) = app.queued_messages.iter().position(|q| q == &msg.content) {
-								app.queued_messages.remove(pos);
-							}
-							app.chat.add_message(Message::User(msg.clone()));
-						}
-						// Restart streaming state for agent's response to steering.
-						app.chat.start_streaming();
-					},
-					AgentEvent::RetryScheduled { attempt, delay_ms, error } => {
-						show_chat_message(
-							&mut app,
-							&format!("Retrying (attempt {attempt}) in {delay_ms}ms: {error}"),
-						);
-					},
-					AgentEvent::Done { outcome, .. } => {
-						mode = AppMode::Idle;
-						agent_cancel = None;
-						app.chat.finish_streaming();
-						// Flush any remaining queued steering messages into chat.
-						for text in std::mem::take(&mut app.queued_messages) {
-							app.chat
-								.add_message(Message::User(UserMessage { content: text }));
-						}
-						app.status.finish_working();
-						app.update_status_border(terminal.columns());
-
-						// Auto-compaction only for non-cancelled outcomes.
-						let maybe_usage = match &outcome {
-							AgentOutcome::Stop { usage } | AgentOutcome::MaxTokens { usage } => {
-								usage.as_ref()
+				Some(AppEvent::Agent(ref tagged)) => {
+					// Drop events from old (stale) agent generations.
+					if tagged.generation == agent_generation {
+						match tagged.event {
+							AgentEvent::AgentStart => {
+								// Agent loop starting — no TUI action needed.
 							},
-							_ => None, // Cancelled, Failed -> no usage
-						};
-						if let Some(usage) = maybe_usage {
-							let context_tokens = usage.input_tokens
-								+ usage.output_tokens
-								+ usage.cache_creation_input_tokens
-								+ usage.cache_read_input_tokens;
-							let compaction_settings = &settings.compaction;
-							if crate::compaction::settings::should_compact(
-								context_tokens,
-								model.context_window,
-								compaction_settings,
-							) {
-								show_chat_message(&mut app, "Context nearing limit, compacting...");
-								match crate::compaction::compact::run_compaction(
-									&session,
-									&model,
-									&api_key,
-									compaction_settings,
-									None,
-								)
-								.await
-								{
-									Ok(result) => {
-										match session.append_compaction(
-											&result.summary,
-											result.short_summary.as_deref(),
-											&result.first_kept_entry_id,
-											result.tokens_before,
-											result.details,
-										) {
-											Ok(()) => {
-												let msg = result
-													.short_summary
-													.as_deref()
-													.unwrap_or("Conversation compacted.");
-												show_chat_message(&mut app, &format!("Auto-compacted: {msg}"));
+							AgentEvent::TurnStart { .. } => {
+								if matches!(mode, AppMode::Streaming) {
+									app.status.set_working_phase("Thinking");
+								}
+							},
+							AgentEvent::TextDelta(ref text) => {
+								let _guard = profile_region("agent_text_delta");
+								if matches!(mode, AppMode::Streaming) {
+									app.chat.append_text(text);
+									render_deferred = true;
+								}
+							},
+							AgentEvent::MessageStart => {
+								// Assistant message stream beginning — no TUI action
+								// needed.
+							},
+							AgentEvent::ThinkingDelta(ref text) => {
+								let _guard = profile_region("agent_thinking_delta");
+								if matches!(mode, AppMode::Streaming) {
+									app.chat.append_thinking(text);
+									render_deferred = true;
+								}
+							},
+							AgentEvent::ToolCallStart { ref name, .. } => {
+								if matches!(mode, AppMode::Streaming) {
+									app.status.set_working_phase(&generate_tool_phase(name));
+									app.chat.set_tool_executing(Some(name.clone()));
+									needs_render = true;
+								}
+							},
+							AgentEvent::ToolExecutionUpdate { ref content, .. } => {
+								if matches!(mode, AppMode::Streaming) {
+									app.chat.append_tool_output(content);
+									render_deferred = true;
+								}
+							},
+							AgentEvent::ToolCallResult { ref id, ref content, is_error, .. } => {
+								app.status.set_working_phase("Thinking");
+								app.chat.set_tool_executing(None);
+								let tool_msg = Message::ToolResult(ToolResultMessage {
+									tool_use_id: id.clone(),
+									content: content.clone(),
+									is_error,
+								});
+								app.chat.add_message(tool_msg.clone());
+								session.append(tool_msg).await?;
+								// Start streaming for next LLM turn.
+								app.chat.start_streaming();
+								needs_render = true;
+							},
+							AgentEvent::TurnEnd { .. } => {
+								// Turn completed — no TUI action needed.
+							},
+							AgentEvent::MessageComplete(ref message) => {
+								if let Some(ref usage) = message.usage {
+									app.status
+										.set_usage(usage.input_tokens, usage.output_tokens);
+									app.update_status_border(terminal.columns());
+								}
+								let message = AssistantMessage::clone(message);
+								session.append(Message::Assistant(message.clone())).await?;
+								app.chat
+									.finish_streaming_with_message(Message::Assistant(message));
+								needs_render = true;
+							},
+							AgentEvent::SteeringProcessed { ref messages } => {
+								// Agent consumed steering — move from banner to chat.
+								for msg in messages {
+									if let Some(pos) =
+										app.queued_messages.iter().position(|q| q == &msg.content)
+									{
+										app.queued_messages.remove(pos);
+									}
+									app.chat.add_message(Message::User(msg.clone()));
+								}
+								// Restart streaming state for agent's response to steering.
+								app.chat.start_streaming();
+								needs_render = true;
+							},
+							AgentEvent::RetryScheduled { attempt, delay_ms, ref error } => {
+								show_chat_message(
+									&mut app,
+									&format!("Retrying (attempt {attempt}) in {delay_ms}ms: {error}"),
+								);
+								needs_render = true;
+							},
+							AgentEvent::Done { ref outcome, .. } => {
+								mode = AppMode::Idle;
+								agent_cancel = None;
+								app.chat.finish_streaming();
+								// Flush any remaining queued steering messages into chat.
+								for text in std::mem::take(&mut app.queued_messages) {
+									app.chat
+										.add_message(Message::User(UserMessage { content: text }));
+								}
+								app.status.finish_working();
+								app.update_status_border(terminal.columns());
+
+								// Auto-compaction only for non-cancelled outcomes.
+								let maybe_usage = match outcome {
+									AgentOutcome::Stop { usage } | AgentOutcome::MaxTokens { usage } => {
+										usage.as_ref()
+									},
+									_ => None, // Cancelled, Failed -> no usage
+								};
+								if let Some(usage) = maybe_usage {
+									let context_tokens = usage.input_tokens
+										+ usage.output_tokens
+										+ usage.cache_creation_input_tokens
+										+ usage.cache_read_input_tokens;
+									let compaction_settings = &settings.compaction;
+									if crate::compaction::settings::should_compact(
+										context_tokens,
+										model.context_window,
+										compaction_settings,
+									) {
+										show_chat_message(&mut app, "Context nearing limit, compacting...");
+										match crate::compaction::compact::run_compaction(
+											&session,
+											&model,
+											&api_key,
+											compaction_settings,
+											None,
+										)
+										.await
+										{
+											Ok(result) => {
+												match session.append_compaction(
+													&result.summary,
+													result.short_summary.as_deref(),
+													&result.first_kept_entry_id,
+													result.tokens_before,
+													result.details,
+												) {
+													Ok(()) => {
+														let msg = result
+															.short_summary
+															.as_deref()
+															.unwrap_or("Conversation compacted.");
+														show_chat_message(
+															&mut app,
+															&format!("Auto-compacted: {msg}"),
+														);
+													},
+													Err(e) => {
+														show_chat_message(
+															&mut app,
+															&format!(
+																"Auto-compaction succeeded but failed to persist: \
+																 {e}"
+															),
+														);
+													},
+												}
 											},
 											Err(e) => {
 												show_chat_message(
 													&mut app,
-													&format!(
-														"Auto-compaction succeeded but failed to persist: {e}"
-													),
+													&format!("Auto-compaction failed: {e}"),
 												);
 											},
 										}
-									},
-									Err(e) => {
-										show_chat_message(&mut app, &format!("Auto-compaction failed: {e}"));
-									},
+									}
 								}
-							}
-						}
 
-						match outcome {
-							AgentOutcome::Cancelled => {}, // Clean exit
-							AgentOutcome::MaxTokens { .. } => {
-								show_chat_message(
-									&mut app,
-									"Warning: response truncated (max tokens reached).",
-								);
+								match outcome {
+									AgentOutcome::Cancelled => {}, // Clean exit
+									AgentOutcome::MaxTokens { .. } => {
+										show_chat_message(
+											&mut app,
+											"Warning: response truncated (max tokens reached).",
+										);
+									},
+									AgentOutcome::Failed { error } => {
+										show_chat_message(&mut app, &format!("Error: {error}"));
+									},
+									_ => {},
+								}
+								needs_render = true;
 							},
-							AgentOutcome::Failed { error } => {
-								show_chat_message(&mut app, &format!("Error: {error}"));
-							},
-							_ => {},
 						}
-					},
-				}
-			},
-			Some(AppEvent::BangChunk(chunk)) => {
-				if matches!(mode, AppMode::BangRunning) {
-					app.chat.append_bang_output(&chunk);
-					render_deferred = true;
-				}
-				continue;
-			},
-			Some(AppEvent::BangDone { exit_code, cancelled }) => {
-				if matches!(mode, AppMode::BangRunning) {
-					let is_error = exit_code.is_none_or(|c| c != 0);
-					if let Some((command, output)) = app.chat.finish_bang(is_error) {
-						let bash_msg = Message::BashExecution(BashExecutionMessage {
-							command,
-							output,
-							exit_code,
-							cancelled,
-							truncated: false,
-							exclude_from_context: bang_exclude_from_context,
-							timestamp: chrono::Utc::now().timestamp(),
-						});
-						session.append(bash_msg).await?;
 					}
-					mode = AppMode::Idle;
-				}
-			},
-			None => break, // Channel closed.
+				},
+				Some(AppEvent::BangChunk(ref chunk)) => {
+					if matches!(mode, AppMode::BangRunning) {
+						app.chat.append_bang_output(chunk);
+						render_deferred = true;
+					}
+				},
+				Some(AppEvent::BangDone { exit_code, cancelled }) => {
+					if matches!(mode, AppMode::BangRunning) {
+						let is_error = exit_code.is_none_or(|c| c != 0);
+						if let Some((command, output)) = app.chat.finish_bang(is_error) {
+							let bash_msg = Message::BashExecution(BashExecutionMessage {
+								command,
+								output,
+								exit_code,
+								cancelled,
+								truncated: false,
+								exclude_from_context: bang_exclude_from_context,
+								timestamp: chrono::Utc::now().timestamp(),
+							});
+							session.append(bash_msg).await?;
+						}
+						mode = AppMode::Idle;
+					}
+					needs_render = true;
+				},
+				None => break 'main, // Channel closed.
+			}
+
+			// Drain the next pending event before rendering.
+			match rx.try_recv() {
+				Ok(evt) => current_event = Some(evt),
+				Err(_) => break 'drain,
+			}
 		}
 
-		// Re-render after every non-deferred event.
-		{
+		// Single render pass for all coalesced events.
+		if needs_render {
 			let _guard = profile_region("render_to_tui");
+			app.update_status_border(terminal.columns());
 			app.tui.request_render();
 			app.render_to_tui(&mut terminal)?;
 			render_deferred = false;
