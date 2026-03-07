@@ -377,6 +377,49 @@ pub fn highlight_code(code: &str, lang: Option<&str>, colors: &HighlightColors) 
 	result
 }
 
+/// Detect language identifier from a file path (by extension or basename).
+///
+/// Checks special basenames (Dockerfile, Makefile, dotfiles), then falls back
+/// to extension lookup against [`LANG_ALIASES`] and syntect's built-in syntax
+/// set.
+pub fn language_from_path(path: &str) -> Option<&'static str> {
+	let basename = path.rsplit('/').next().unwrap_or(path);
+	let lower = basename.to_ascii_lowercase();
+
+	// Special dotfiles / basenames
+	if lower.starts_with(".env") {
+		return Some("ini");
+	}
+	if matches!(lower.as_str(), ".gitignore" | ".gitattributes" | ".gitmodules") {
+		return Some("gitignore");
+	}
+	if matches!(lower.as_str(), ".editorconfig" | ".npmrc") {
+		return Some("ini");
+	}
+	if lower == "dockerfile" {
+		return Some("dockerfile");
+	}
+	if lower == "makefile" {
+		return Some("makefile");
+	}
+
+	// Extension-based lookup
+	let ext = lower.rsplit('.').next()?;
+	if ext == lower {
+		// No extension found (rsplit returned the whole string)
+		return None;
+	}
+	find_alias(ext).or_else(|| {
+		let ss = get_syntax_set();
+		ss.find_syntax_by_extension(ext).map(|s| {
+			// Leak the name so we can return &'static str.
+			// This is fine — there's a bounded number of syntect syntaxes.
+			let name: &'static str = Box::leak(s.name.clone().into_boxed_str());
+			name
+		})
+	})
+}
+
 /// Check if a language is supported for highlighting.
 pub fn supports_language(lang: &str) -> bool {
 	if is_known_alias(lang) {
@@ -431,5 +474,41 @@ mod tests {
 		assert!(supports_language("python"));
 		assert!(supports_language("ts"));
 		assert!(supports_language("JavaScript"));
+	}
+
+	#[test]
+	fn test_language_from_path_common_extensions() {
+		assert_eq!(language_from_path("src/main.rs"), Some("Rust"));
+		assert_eq!(language_from_path("lib.py"), Some("Python"));
+		assert_eq!(language_from_path("app.ts"), Some("JavaScript"));
+		assert_eq!(language_from_path("index.html"), Some("HTML"));
+		assert_eq!(language_from_path("style.css"), Some("CSS"));
+		assert_eq!(language_from_path("config.json"), Some("JSON"));
+		assert_eq!(language_from_path("data.yaml"), Some("YAML"));
+		assert_eq!(language_from_path("Cargo.toml"), Some("TOML"));
+	}
+
+	#[test]
+	fn test_language_from_path_special_basenames() {
+		assert_eq!(language_from_path("Dockerfile"), Some("dockerfile"));
+		assert_eq!(language_from_path("Makefile"), Some("makefile"));
+		assert_eq!(language_from_path(".gitignore"), Some("gitignore"));
+		assert_eq!(language_from_path(".gitattributes"), Some("gitignore"));
+		assert_eq!(language_from_path(".env"), Some("ini"));
+		assert_eq!(language_from_path(".env.local"), Some("ini"));
+		assert_eq!(language_from_path(".editorconfig"), Some("ini"));
+		assert_eq!(language_from_path(".npmrc"), Some("ini"));
+	}
+
+	#[test]
+	fn test_language_from_path_full_paths() {
+		assert_eq!(language_from_path("/home/user/project/src/main.rs"), Some("Rust"));
+		assert_eq!(language_from_path("crates/rho/src/lib.rs"), Some("Rust"));
+	}
+
+	#[test]
+	fn test_language_from_path_unknown() {
+		assert!(language_from_path("file.unknownext123").is_none());
+		assert!(language_from_path("noextension").is_none());
 	}
 }

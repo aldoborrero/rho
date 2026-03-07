@@ -8,6 +8,7 @@ use rho_tui::{
 	components::output_block::{
 		OutputBlockOptions, OutputBlockState, OutputSection, render_output_block,
 	},
+	highlight::{highlight_code, language_from_path},
 	symbols::TreeSymbols,
 	theme::{Theme, ThemeBg, ThemeColor},
 };
@@ -210,6 +211,86 @@ fn render_combined_block(
 	render_output_block(&opts, width)
 }
 
+// ── Code Cell ───────────────────────────────────────────────────────────
+
+/// Options for rendering a syntax-highlighted code cell.
+pub struct CodeCellOptions<'a> {
+	/// Source code to display.
+	pub code:           &'a str,
+	/// Language identifier for syntax highlighting.
+	pub language:       Option<&'a str>,
+	/// Pre-styled header string (e.g. icon + tool name + file path).
+	pub title:          String,
+	/// Visual state of the block.
+	pub state:          OutputBlockState,
+	/// Additional output lines (warnings, truncation info) shown below code.
+	pub output_lines:   Vec<String>,
+	/// Whether the block is expanded to show all lines.
+	pub expanded:       bool,
+	/// Maximum visible code lines when collapsed (default: 12).
+	pub code_max_lines: usize,
+}
+
+/// Render a bordered code cell with syntax highlighting.
+///
+/// Produces a bordered output block containing highlighted code, optionally
+/// collapsed to `code_max_lines`, with an optional "Output" section for
+/// warnings or metadata.
+pub fn render_code_cell(opts: &CodeCellOptions, theme: &Theme, width: u16) -> Vec<String> {
+	let colors = theme.highlight_colors();
+	let highlighted = highlight_code(opts.code, opts.language, &colors);
+
+	// Expand tabs to spaces so visible_width_str matches terminal rendering.
+	// highlight_code preserves literal tabs, but terminals render them with
+	// variable width (position-dependent). Replacing with TAB_WIDTH spaces
+	// ensures the padding calculation matches what the terminal displays.
+	let tab_spaces = " ".repeat(rho_text::TAB_WIDTH);
+	let expanded = highlighted.replace('\t', &tab_spaces);
+
+	// Split into lines and ensure each line ends with a color reset.
+	// highlight_code may wrap ANSI escapes around newline characters, so
+	// after splitting the color from one line can leak into the padding
+	// and borders of the output block.
+	let all_lines: Vec<String> = expanded
+		.lines()
+		.map(|line| format!("{line}\x1b[39m"))
+		.collect();
+	let all_refs: Vec<&str> = all_lines.iter().map(String::as_str).collect();
+
+	let max = if opts.expanded {
+		usize::MAX
+	} else {
+		opts.code_max_lines
+	};
+	let mut collapsed = collapse_lines(&all_refs, max, theme);
+
+	// Ensure at least one empty line so side borders are visible even for
+	// empty content (e.g. empty files).
+	if collapsed.is_empty() {
+		collapsed.push(String::new());
+	}
+
+	let mut sections = vec![OutputSection { label: None, lines: collapsed }];
+
+	if !opts.output_lines.is_empty() {
+		sections.push(OutputSection {
+			label: Some(theme.dim("Output")),
+			lines: opts.output_lines.clone(),
+		});
+	}
+
+	let header_width = rho_text::width::visible_width_str(&opts.title);
+	let block_opts = OutputBlockOptions {
+		header: opts.title.clone(),
+		header_width,
+		state: opts.state,
+		sections,
+		border_style: make_border_style(theme, opts.state),
+		bg_style: make_bg_style(theme, opts.state),
+	};
+	render_output_block(&block_opts, width)
+}
+
 // ── BashRenderer ────────────────────────────────────────────────────────
 
 pub struct BashRenderer;
@@ -285,40 +366,64 @@ impl ToolRenderer for ReadRenderer {
 	fn render_result(
 		&self,
 		result: &ToolResultDisplay,
-		_expanded: bool,
+		expanded: bool,
 		theme: &Theme,
-		_width: u16,
+		width: u16,
 	) -> Vec<String> {
-		let icon = if result.is_error {
-			theme.fg(ThemeColor::Error, "\u{2718}")
-		} else {
-			theme.fg(ThemeColor::Success, "\u{2714}")
-		};
-		let label = if result.is_error {
-			"Read failed"
-		} else {
-			"Read"
-		};
-		let text = theme.fg(ThemeColor::Dim, label);
-		vec![format!("  {icon} {text}")]
+		if result.is_error {
+			let icon = theme.fg(ThemeColor::Error, "\u{2718}");
+			let text = theme.fg(ThemeColor::Dim, "Read failed");
+			return vec![format!("  {icon} {text}")];
+		}
+		let icon = theme.fg(ThemeColor::Success, "\u{2714}");
+		let title = theme.fg(ThemeColor::ToolTitle, &theme.bold(&format!("{icon} Read")));
+		render_code_cell(
+			&CodeCellOptions {
+				code: &result.content,
+				language: None,
+				title,
+				state: OutputBlockState::Success,
+				output_lines: vec![],
+				expanded,
+				code_max_lines: 12,
+			},
+			theme,
+			width,
+		)
 	}
 
 	fn render_combined(
 		&self,
 		args: &Value,
 		result: &ToolResultDisplay,
-		_expanded: bool,
+		expanded: bool,
 		theme: &Theme,
-		_width: u16,
+		width: u16,
 	) -> Vec<String> {
 		let file = read_path(args);
-		let icon = if result.is_error {
-			theme.fg(ThemeColor::Error, "\u{2718}")
-		} else {
-			theme.fg(ThemeColor::Success, "\u{2714}")
-		};
-		let path_display = theme.fg(ThemeColor::Dim, file);
-		vec![format!("  {icon} {path_display}")]
+		if result.is_error {
+			let icon = theme.fg(ThemeColor::Error, "\u{2718}");
+			let path_display = theme.fg(ThemeColor::Dim, file);
+			return vec![format!("  {icon} {path_display}")];
+		}
+		let icon = theme.fg(ThemeColor::Success, "\u{2714}");
+		let path_styled = theme.fg(ThemeColor::Dim, file);
+		let title =
+			theme.fg(ThemeColor::ToolTitle, &theme.bold(&format!("{icon} Read {path_styled}")));
+		let lang = language_from_path(file);
+		render_code_cell(
+			&CodeCellOptions {
+				code: &result.content,
+				language: lang,
+				title,
+				state: OutputBlockState::Success,
+				output_lines: vec![],
+				expanded,
+				code_max_lines: 12,
+			},
+			theme,
+			width,
+		)
 	}
 }
 
@@ -745,10 +850,15 @@ mod tests {
 	fn read_render_result_success() {
 		let theme = test_theme();
 		let lines = ReadRenderer.render_result(&success_result(), false, &theme, 80);
-		assert!(!lines.is_empty(), "ReadRenderer::render_result should produce output");
+		assert!(lines.len() > 1, "ReadRenderer::render_result should produce a bordered block");
 		assert!(
 			lines.iter().any(|l| l.contains("\u{2714}")),
 			"success result should contain check mark",
+		);
+		// Should have border chars
+		assert!(
+			lines.iter().any(|l| l.contains('\u{256d}')),
+			"success result should have top border",
 		);
 	}
 
@@ -761,6 +871,8 @@ mod tests {
 			lines.iter().any(|l| l.contains("\u{2718}")),
 			"error result should contain cross mark",
 		);
+		// Errors stay inline — single line, no border
+		assert_eq!(lines.len(), 1, "error result should be a single inline line");
 	}
 
 	// ── WriteRenderer ───────────────────────────────────────────────
@@ -1017,28 +1129,278 @@ mod tests {
 	}
 
 	#[test]
-	fn read_render_combined_shows_file_path() {
+	fn read_render_combined_shows_code_cell() {
 		let theme = test_theme();
 		let args = serde_json::json!({ "path": "src/main.rs" });
-		let result = success_result();
+		let result = ToolResultDisplay {
+			content:  "fn main() {\n    println!(\"hello\");\n}".to_owned(),
+			is_error: false,
+		};
 		let combined = ReadRenderer.render_combined(&args, &result, false, &theme, 80);
-		assert_eq!(combined.len(), 1, "combined should be a single line");
+		assert!(combined.len() > 1, "combined should be a bordered code cell");
 		assert!(
-			combined[0].contains("src/main.rs"),
-			"combined should include file path, got: {:?}",
-			combined[0],
+			combined.iter().any(|l| l.contains("src/main.rs")),
+			"combined should include file path in header",
 		);
-		assert!(combined[0].contains('\u{2714}'), "combined should include check mark for success",);
+		assert!(
+			combined.iter().any(|l| l.contains("\u{2714}")),
+			"combined should include check mark for success",
+		);
+		// Should contain the code content
+		assert!(combined.iter().any(|l| l.contains("main")), "combined should show code content",);
 	}
 
 	#[test]
-	fn read_render_combined_error_shows_cross() {
+	fn read_render_combined_error_stays_inline() {
 		let theme = test_theme();
 		let args = serde_json::json!({ "path": "missing.rs" });
 		let result = error_result();
 		let combined = ReadRenderer.render_combined(&args, &result, false, &theme, 80);
+		assert_eq!(combined.len(), 1, "error combined should be a single inline line");
 		assert!(combined[0].contains('\u{2718}'), "combined error should include cross mark",);
 		assert!(combined[0].contains("missing.rs"), "combined error should include file path",);
+	}
+
+	// ── render_code_cell ──────────────────────────────────────────
+
+	#[test]
+	fn code_cell_basic_output() {
+		let theme = test_theme();
+		let title = theme.fg(ThemeColor::ToolTitle, &theme.bold("Test"));
+		let lines = render_code_cell(
+			&CodeCellOptions {
+				code: "let x = 1;",
+				language: Some("rust"),
+				title,
+				state: OutputBlockState::Success,
+				output_lines: vec![],
+				expanded: false,
+				code_max_lines: 12,
+			},
+			&theme,
+			80,
+		);
+		assert!(lines.len() >= 3, "code cell should have top border, content, bottom border");
+		assert!(lines.iter().any(|l| l.contains('\u{256d}')), "should have top border");
+		assert!(lines.iter().any(|l| l.contains('\u{2570}')), "should have bottom border");
+	}
+
+	#[test]
+	fn code_cell_collapses_at_max_lines() {
+		let theme = test_theme();
+		let code = (0..20)
+			.map(|i| format!("line {i}"))
+			.collect::<Vec<_>>()
+			.join("\n");
+		let title = theme.fg(ThemeColor::ToolTitle, &theme.bold("Test"));
+		let collapsed = render_code_cell(
+			&CodeCellOptions {
+				code:           &code,
+				language:       None,
+				title:          title.clone(),
+				state:          OutputBlockState::Success,
+				output_lines:   vec![],
+				expanded:       false,
+				code_max_lines: 12,
+			},
+			&theme,
+			80,
+		);
+		assert!(
+			collapsed.iter().any(|l| l.contains("more lines")),
+			"collapsed code cell should show 'more lines' indicator",
+		);
+
+		let title2 = theme.fg(ThemeColor::ToolTitle, &theme.bold("Test"));
+		let expanded = render_code_cell(
+			&CodeCellOptions {
+				code:           &code,
+				language:       None,
+				title:          title2,
+				state:          OutputBlockState::Success,
+				output_lines:   vec![],
+				expanded:       true,
+				code_max_lines: 12,
+			},
+			&theme,
+			80,
+		);
+		assert!(
+			!expanded.iter().any(|l| l.contains("more lines")),
+			"expanded code cell should not have 'more lines' indicator",
+		);
+	}
+
+	#[test]
+	fn code_cell_empty_code_still_has_side_borders() {
+		let theme = test_theme();
+		let title = theme.fg(ThemeColor::ToolTitle, &theme.bold("Test"));
+		let lines = render_code_cell(
+			&CodeCellOptions {
+				code: "",
+				language: None,
+				title,
+				state: OutputBlockState::Success,
+				output_lines: vec![],
+				expanded: false,
+				code_max_lines: 12,
+			},
+			&theme,
+			80,
+		);
+		// Must have 3 lines: header + 1 empty content line + footer
+		assert_eq!(lines.len(), 3, "empty code should produce header + empty content + footer");
+		// All lines should be full width
+		for (i, line) in lines.iter().enumerate() {
+			let w = rho_text::width::visible_width_str(line);
+			assert_eq!(w, 80, "empty code line {i} has width {w} instead of 80");
+		}
+		// Middle line should have side borders
+		assert!(lines[1].contains('\u{2502}'), "empty content line should have side borders");
+	}
+
+	#[test]
+	fn code_cell_with_output_section() {
+		let theme = test_theme();
+		let title = theme.fg(ThemeColor::ToolTitle, &theme.bold("Test"));
+		let lines = render_code_cell(
+			&CodeCellOptions {
+				code: "hello",
+				language: None,
+				title,
+				state: OutputBlockState::Success,
+				output_lines: vec!["warning: truncated".to_owned()],
+				expanded: false,
+				code_max_lines: 12,
+			},
+			&theme,
+			80,
+		);
+		assert!(
+			lines.iter().any(|l| l.contains("warning: truncated")),
+			"output section should appear in rendered block",
+		);
+	}
+
+	#[test]
+	fn code_cell_blank_lines_have_full_width_borders() {
+		let theme = test_theme();
+		// Test with plain text (no highlighting)
+		let title = "Test".to_owned();
+		let code = "line1\n\nline3\n\nline5";
+		let lines = render_code_cell(
+			&CodeCellOptions {
+				code,
+				language: None,
+				title,
+				state: OutputBlockState::Success,
+				output_lines: vec![],
+				expanded: false,
+				code_max_lines: 12,
+			},
+			&theme,
+			80,
+		);
+		for (i, line) in lines.iter().enumerate() {
+			let w = rho_text::width::visible_width_str(line);
+			assert_eq!(w, 80, "plain line {i} has visible width {w} instead of 80: {line:?}");
+		}
+		// Must have 7 lines: header + 5 content + footer
+		assert_eq!(lines.len(), 7, "should have header + 5 content lines + footer");
+
+		// Test with syntax highlighting (ANSI escapes in content)
+		let title2 = "Test".to_owned();
+		let rust_code = "fn main() {\n\n    println!(\"hello\");\n\n}";
+		let lines2 = render_code_cell(
+			&CodeCellOptions {
+				code:           rust_code,
+				language:       Some("rust"),
+				title:          title2,
+				state:          OutputBlockState::Success,
+				output_lines:   vec![],
+				expanded:       false,
+				code_max_lines: 12,
+			},
+			&theme,
+			80,
+		);
+		for (i, line) in lines2.iter().enumerate() {
+			let w = rho_text::width::visible_width_str(line);
+			assert_eq!(w, 80, "rust line {i} has visible width {w} instead of 80: {line:?}");
+		}
+		// Must have 7 lines: header + 5 content + footer
+		assert_eq!(lines2.len(), 7, "highlighted should have header + 5 content lines + footer");
+
+		// Test with Read tool format (line numbers + tabs)
+		let title3 = "Test".to_owned();
+		let read_output = "     1\tfn main() {\n     2\t\n     3\t}";
+		let lines3 = render_code_cell(
+			&CodeCellOptions {
+				code:           read_output,
+				language:       Some("rust"),
+				title:          title3,
+				state:          OutputBlockState::Success,
+				output_lines:   vec![],
+				expanded:       false,
+				code_max_lines: 12,
+			},
+			&theme,
+			80,
+		);
+		for (i, line) in lines3.iter().enumerate() {
+			let w = rho_text::width::visible_width_str(line);
+			assert_eq!(w, 80, "read-format line {i} has visible width {w} instead of 80: {line:?}",);
+		}
+		// Must have 5 lines: header + 3 content + footer
+		assert_eq!(lines3.len(), 5, "read format should have header + 3 content lines + footer");
+
+		// Test with markdown content (the reported issue)
+		let title4 = "Test".to_owned();
+		let md_code = "# Title\n\nSome text\n\n## Section";
+		let lines4 = render_code_cell(
+			&CodeCellOptions {
+				code:           md_code,
+				language:       Some("markdown"),
+				title:          title4,
+				state:          OutputBlockState::Success,
+				output_lines:   vec![],
+				expanded:       false,
+				code_max_lines: 12,
+			},
+			&theme,
+			80,
+		);
+		assert_eq!(lines4.len(), 7, "markdown should have header + 5 content lines + footer");
+		for (i, line) in lines4.iter().enumerate() {
+			let w = rho_text::width::visible_width_str(line);
+			assert_eq!(w, 80, "md line {i} has visible width {w} instead of 80: {line:?}");
+		}
+
+		// Test with Read tool format + markdown (line numbers + tabs + markdown)
+		let title5 = "Test".to_owned();
+		let read_md = "     1\t# Title\n     2\t\n     3\tSome text";
+		let lines5 = render_code_cell(
+			&CodeCellOptions {
+				code:           read_md,
+				language:       Some("markdown"),
+				title:          title5,
+				state:          OutputBlockState::Success,
+				output_lines:   vec![],
+				expanded:       false,
+				code_max_lines: 12,
+			},
+			&theme,
+			80,
+		);
+		assert_eq!(lines5.len(), 5, "read+md should have header + 3 content lines + footer");
+		for (i, line) in lines5.iter().enumerate() {
+			let w = rho_text::width::visible_width_str(line);
+			assert_eq!(w, 80, "read+md line {i} has visible width {w} instead of 80: {line:?}");
+		}
+		// Verify no tab characters remain in rendered output
+		for (i, line) in lines5.iter().enumerate() {
+			assert!(!line.contains('\t'), "line {i} should not contain tab characters: {line:?}",);
+		}
 	}
 
 	#[test]
