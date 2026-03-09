@@ -652,6 +652,22 @@ pub async fn run_interactive(
 							else if data == "\x0f" {
 								app.chat.toggle_tool_expansion();
 							}
+							// PageUp: scroll chat history up.
+							else if rho_tui::keys::matches_key(
+								data.as_bytes(),
+								"pageup",
+								terminal.kitty_protocol_active(),
+							) {
+								app.chat.scroll_up();
+							}
+							// PageDown: scroll chat history down.
+							else if rho_tui::keys::matches_key(
+								data.as_bytes(),
+								"pagedown",
+								terminal.kitty_protocol_active(),
+							) {
+								app.chat.scroll_down();
+							}
 							// Escape — cancel active operation (bypasses editor).
 							else if data == "\x1b"
 								&& matches!(mode, AppMode::Streaming | AppMode::BangRunning)
@@ -781,6 +797,7 @@ pub async fn run_interactive(
 												});
 											},
 											InputAction::UserMessage(text) => {
+												app.chat.scroll_to_bottom();
 												let user_msg =
 													Message::User(UserMessage { content: text.to_owned() });
 

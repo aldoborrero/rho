@@ -169,6 +169,7 @@ impl App {
 		lines.extend(Spacer::new(1).render(width));
 		lines.extend(self.welcome.render(width));
 		lines.extend(Spacer::new(1).render(width));
+		self.chat.set_viewport_height(terminal.rows());
 		lines.extend(self.chat.render(width));
 		lines.extend(self.render_queued_banner(width));
 		if let Some(ref mut selector) = self.model_selector {
@@ -180,7 +181,7 @@ impl App {
 			lines.extend(self.editor.render(width));
 		}
 		lines.extend(Spacer::new(1).render(width));
-		self.tui.render_lines(&lines, terminal)
+		self.tui.render_lines(lines, terminal)
 	}
 
 	/// Render the queued steering messages banner (appears between chat and

@@ -7,7 +7,7 @@ use rho_tui::{
 	component::{Component, InputResult},
 	components::{
 		loader::Loader,
-		markdown::Markdown,
+		markdown::{Markdown, MarkdownTheme},
 		output_block::{OutputBlockOptions, OutputBlockState, OutputSection, render_output_block},
 	},
 	symbols::SymbolTheme,
@@ -69,6 +69,8 @@ pub struct ChatComponent {
 	theme:                 Rc<Theme>,
 	/// Symbol theme for markdown rendering.
 	symbols:               SymbolTheme,
+	/// Cached markdown theme — built once, cloned (Rc bumps) per render.
+	md_theme:              MarkdownTheme,
 	/// Whether tool output blocks are expanded (Ctrl+O toggle).
 	tools_expanded:        bool,
 	/// Side-table cache for rendered tool results, keyed by `tool_use_id`.
@@ -92,6 +94,14 @@ pub struct ChatComponent {
 	/// Cached render of `streaming_text` — invalidated when text length or
 	/// render width changes.
 	streaming_cache:       Option<RenderedLines>,
+	/// Available viewport height (terminal rows). Set by App before render.
+	viewport_height:       u16,
+	/// Per-item rendered line count from the last render. Used to compute
+	/// which items are off-screen on the NEXT render. Skipped items preserve
+	/// their old height value.
+	item_line_counts:      Vec<usize>,
+	/// Terminal width used in the last render (for height invalidation).
+	last_render_width:     u16,
 }
 
 impl ChatComponent {
@@ -108,6 +118,7 @@ impl ChatComponent {
 			"Thinking...",
 		);
 		loader.stop(); // Don't run until streaming starts.
+		let md_theme = theme.markdown_theme(symbols.clone());
 		Self {
 			items: Vec::new(),
 			streaming_text: String::new(),
@@ -116,6 +127,7 @@ impl ChatComponent {
 			scroll_offset: 0,
 			theme,
 			symbols,
+			md_theme,
 			tools_expanded: false,
 			render_cache: RefCell::new(HashMap::new()),
 			item_render_cache: RefCell::new(HashMap::new()),
@@ -125,6 +137,9 @@ impl ChatComponent {
 			streaming_bang: None,
 			streaming_tool_output: String::new(),
 			streaming_cache: None,
+			viewport_height: 0,
+			item_line_counts: Vec::new(),
+			last_render_width: 0,
 		}
 	}
 
@@ -283,6 +298,7 @@ impl ChatComponent {
 		self.scroll_offset = 0;
 		self.render_cache.borrow_mut().clear();
 		self.item_render_cache.borrow_mut().clear();
+		self.item_line_counts.clear();
 		self.tool_name_cache.clear();
 		self.loader.stop();
 		self.tool_executing = None;
@@ -295,6 +311,7 @@ impl ChatComponent {
 		self.tools_expanded = !self.tools_expanded;
 		self.render_cache.borrow_mut().clear();
 		self.item_render_cache.borrow_mut().clear();
+		self.item_line_counts.clear();
 	}
 
 	/// Advance spinner animation. Returns true if re-render needed.
@@ -433,7 +450,7 @@ impl ChatComponent {
 		for block in &msg.content {
 			match block {
 				ContentBlock::Text { text } => {
-					let md_theme = self.theme.markdown_theme(self.symbols.clone());
+					let md_theme = self.md_theme.clone();
 					let mut md = Markdown::new(text, 1, 0, md_theme, None, 2);
 					let rendered = md.render(width);
 					lines.extend(rendered);
@@ -634,6 +651,96 @@ impl ChatComponent {
 				.is_some_and(|n| n.eq_ignore_ascii_case("read")))
 	}
 
+	/// Set the available viewport height (terminal rows).
+	pub fn set_viewport_height(&mut self, height: u16) {
+		self.viewport_height = height;
+		// Clamp scroll_offset to valid range.
+		let max_offset = self.total_content_height().saturating_sub(height as usize);
+		self.scroll_offset = self.scroll_offset.min(max_offset);
+	}
+
+	/// Scroll up (show older messages). Scrolls by half a viewport.
+	pub fn scroll_up(&mut self) {
+		let page = (self.viewport_height as usize) / 2;
+		let max_offset = self
+			.total_content_height()
+			.saturating_sub(self.viewport_height as usize);
+		self.scroll_offset = (self.scroll_offset + page).min(max_offset);
+	}
+
+	/// Scroll down (show newer messages). Scrolls by half a viewport.
+	pub fn scroll_down(&mut self) {
+		let page = (self.viewport_height as usize) / 2;
+		self.scroll_offset = self.scroll_offset.saturating_sub(page);
+	}
+
+	/// Scroll by an exact number of lines. Positive = up, negative = down.
+	pub fn scroll_lines(&mut self, lines: i32) {
+		let max_offset = self
+			.total_content_height()
+			.saturating_sub(self.viewport_height as usize);
+		if lines > 0 {
+			self.scroll_offset = (self.scroll_offset + lines as usize).min(max_offset);
+		} else {
+			self.scroll_offset = self
+				.scroll_offset
+				.saturating_sub(lines.unsigned_abs() as usize);
+		}
+	}
+
+	/// Scroll to the bottom (show latest messages).
+	pub fn scroll_to_bottom(&mut self) {
+		self.scroll_offset = 0;
+	}
+
+	/// Whether the user is scrolled up from the bottom.
+	pub fn is_scrolled_up(&self) -> bool {
+		self.scroll_offset > 0
+	}
+
+	/// Total rendered height of all items (from last render).
+	fn total_content_height(&self) -> usize {
+		self.item_line_counts.iter().sum()
+	}
+
+	/// Compute the [start, end) item range visible in the viewport.
+	///
+	/// Uses heights from the previous render. Falls back to (0, item_count)
+	/// if no height data is available (first render or after invalidation).
+	fn compute_visible_range(&self, item_count: usize) -> (usize, usize) {
+		if self.viewport_height == 0 || self.item_line_counts.is_empty() {
+			return (0, item_count);
+		}
+		let max_lines = self.viewport_height as usize;
+		let walk_end = std::cmp::min(item_count, self.item_line_counts.len());
+
+		// Phase 1: Find end — skip scroll_offset lines from the bottom.
+		let mut end = walk_end;
+		if self.scroll_offset > 0 {
+			let mut bottom_skip = 0usize;
+			for i in (0..walk_end).rev() {
+				bottom_skip += self.item_line_counts[i];
+				if bottom_skip >= self.scroll_offset {
+					end = i + 1;
+					break;
+				}
+			}
+		}
+
+		// Phase 2: Find start — viewport_height lines up from end.
+		let mut start = 0;
+		let mut acc = 0usize;
+		for i in (0..end).rev() {
+			acc += self.item_line_counts[i];
+			if acc > max_lines {
+				start = i + 1;
+				break;
+			}
+		}
+
+		(start, end)
+	}
+
 	/// Collect consecutive Read tool results starting at index `start`.
 	/// Returns the group entries and the count of items consumed.
 	fn collect_read_group(&self, start: usize) -> (Vec<ReadGroupEntry>, usize) {
@@ -664,18 +771,36 @@ impl Component for ChatComponent {
 	fn render(&mut self, width: u16) -> Vec<String> {
 		let mut lines = Vec::new();
 
-		// Iterate over items without cloning — `render_tool_result` now takes
-		// `&self` thanks to the `RefCell`-wrapped render cache.
+		// Invalidate heights when width changes (items re-wrap).
+		if width != self.last_render_width {
+			self.item_line_counts.clear();
+			self.last_render_width = width;
+		}
+
 		let item_count = self.items.len();
+		let (start_idx, end_idx) = self.compute_visible_range(item_count);
+
+		let mut new_heights: Vec<usize> = Vec::with_capacity(item_count);
 		let mut i = 0;
 		while i < item_count {
+			if i < start_idx || i >= end_idx {
+				// Off-screen: preserve old height, don't render.
+				new_heights.push(self.item_line_counts.get(i).copied().unwrap_or(0));
+				i += 1;
+				continue;
+			}
+
+			let before_len = lines.len();
+
 			match &self.items[i] {
 				ChatItem::Message(Message::User(u)) => {
 					lines.extend(self.render_user_message(u, width, i));
+					new_heights.push(lines.len() - before_len);
 					i += 1;
 				},
 				ChatItem::Message(Message::Assistant(a)) => {
 					lines.extend(self.render_assistant_message(a, width, i));
+					new_heights.push(lines.len() - before_len);
 					i += 1;
 				},
 				ChatItem::Message(Message::ToolResult(_)) => {
@@ -683,8 +808,12 @@ impl Component for ChatComponent {
 					if self.is_read_tool_result(i) {
 						let (entries, count) = self.collect_read_group(i);
 						if entries.len() >= 2 {
-							// Render as a grouped tree.
 							lines.extend(render_read_group(&entries, &self.symbols.tree, &self.theme));
+							let group_h = lines.len() - before_len;
+							new_heights.push(group_h);
+							for _ in 1..count {
+								new_heights.push(0);
+							}
 							i += count;
 							continue;
 						}
@@ -693,38 +822,42 @@ impl Component for ChatComponent {
 					if let ChatItem::Message(Message::ToolResult(t)) = &self.items[i] {
 						lines.extend(self.render_tool_result(t, width));
 					}
+					new_heights.push(lines.len() - before_len);
 					i += 1;
 				},
 				ChatItem::Message(Message::BashExecution(_)) => {
-					// BashExecution messages are rendered via ChatItem::Bang (see add_bang_output).
-					// This arm handles the case where a BashExecution is added directly
-					// via add_message(); it is intentionally skipped as a display item.
+					new_heights.push(0);
 					i += 1;
 				},
 				ChatItem::Bang(bang) => {
 					lines.extend(self.render_bang_output(bang, width));
+					new_heights.push(lines.len() - before_len);
 					i += 1;
 				},
 				ChatItem::Status(text) => {
 					lines.push(String::new());
 					lines.push(format!("  {}", self.theme.fg(ThemeColor::Dim, text)));
+					new_heights.push(lines.len() - before_len);
 					i += 1;
 				},
 			}
 		}
+		self.item_line_counts = new_heights;
 
-		// Render in-progress bang output block
-		if let Some(ref bang) = self.streaming_bang {
-			let bang_clone = BangOutput {
-				command:  bang.command.clone(),
-				output:   bang.output.clone(),
-				is_error: bang.is_error,
-			};
-			lines.extend(self.render_bang_running(&bang_clone, width));
+		// Only render in-progress bang when at the bottom.
+		if self.scroll_offset == 0 {
+			if let Some(ref bang) = self.streaming_bang {
+				let bang_clone = BangOutput {
+					command:  bang.command.clone(),
+					output:   bang.output.clone(),
+					is_error: bang.is_error,
+				};
+				lines.extend(self.render_bang_running(&bang_clone, width));
+			}
 		}
 
-		// Render streaming content
-		if self.is_streaming {
+		// Only render streaming content when at the bottom.
+		if self.is_streaming && self.scroll_offset == 0 {
 			let has_content = !self.streaming_text.is_empty() || !self.streaming_thinking.is_empty();
 			if !has_content && self.tool_executing.is_none() {
 				// No content yet — show spinner
@@ -743,7 +876,7 @@ impl Component for ChatComponent {
 						.as_ref()
 						.is_some_and(|c| c.text_len == self.streaming_text.len() && c.width == width);
 					if !cache_valid {
-						let md_theme = self.theme.markdown_theme(self.symbols.clone());
+						let md_theme = self.md_theme.clone();
 						let mut md = Markdown::new(&self.streaming_text, 1, 0, md_theme, None, 2);
 						let rendered = md.render(width);
 						self.streaming_cache = Some(RenderedLines {
@@ -762,6 +895,12 @@ impl Component for ChatComponent {
 					lines.extend(self.loader.render(width));
 				}
 			}
+		}
+
+		// Scroll indicator when scrolled up.
+		if self.scroll_offset > 0 {
+			lines.push(String::new());
+			lines.push(format!("  {}", self.theme.dim("\u{2193} More messages below")));
 		}
 
 		lines
