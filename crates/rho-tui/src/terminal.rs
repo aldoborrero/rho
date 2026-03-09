@@ -34,9 +34,9 @@ pub fn emergency_terminal_restore() {
 	// Best-effort: ignore errors since terminal may be dead
 	let _ = execute!(
 		stdout,
-		event::DisableMouseCapture, // Disable mouse capture
-		Print("\x1b[?2004l"),       // Disable bracketed paste
-		Print("\x1b[<u"),           // Pop kitty keyboard protocol
+		event::DisableMouseCapture,   // Disable mouse capture
+		event::DisableBracketedPaste, // Disable bracketed paste
+		Print("\x1b[<u"),             // Pop kitty keyboard protocol
 		cursor::Show,
 	);
 	let _ = terminal::disable_raw_mode();
@@ -213,11 +213,8 @@ impl Terminal for CrosstermTerminal {
 		self.was_raw = terminal::is_raw_mode_enabled()?;
 		terminal::enable_raw_mode()?;
 
-		// Enable bracketed paste
-		self.safe_write("\x1b[?2004h")?;
-
-		// Enable mouse capture (for scroll wheel support).
-		execute!(io::stdout(), event::EnableMouseCapture)?;
+		// Enable bracketed paste and mouse capture (for scroll wheel support).
+		execute!(io::stdout(), event::EnableBracketedPaste, event::EnableMouseCapture)?;
 
 		// Query and enable Kitty protocol
 		self.query_kitty_protocol()?;
@@ -226,11 +223,8 @@ impl Terminal for CrosstermTerminal {
 	}
 
 	fn stop(&mut self) -> io::Result<()> {
-		// Disable mouse capture.
-		let _ = execute!(io::stdout(), event::DisableMouseCapture);
-
-		// Disable bracketed paste
-		self.safe_write("\x1b[?2004l")?;
+		// Disable mouse capture and bracketed paste.
+		let _ = execute!(io::stdout(), event::DisableMouseCapture, event::DisableBracketedPaste);
 
 		// Disable Kitty protocol
 		self.disable_kitty_protocol()?;
@@ -295,7 +289,7 @@ impl Terminal for CrosstermTerminal {
 	}
 
 	fn set_title(&mut self, title: &str) -> io::Result<()> {
-		self.safe_write(&format!("\x1b]0;{title}\x07"))
+		execute!(io::stdout(), terminal::SetTitle(title))
 	}
 
 	fn poll_event(&mut self, timeout: Duration) -> io::Result<Option<TerminalEvent>> {
