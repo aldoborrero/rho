@@ -459,6 +459,15 @@ pub async fn run_interactive(
 							crossterm::event::Event::Resize(cols, rows) => {
 								AppEvent::Terminal(rho_tui::TerminalEvent::Resize(cols, rows))
 							},
+							crossterm::event::Event::Mouse(mouse) => match mouse.kind {
+								crossterm::event::MouseEventKind::ScrollUp => {
+									AppEvent::Terminal(rho_tui::TerminalEvent::MouseScroll(1))
+								},
+								crossterm::event::MouseEventKind::ScrollDown => {
+									AppEvent::Terminal(rho_tui::TerminalEvent::MouseScroll(-1))
+								},
+								_ => continue,
+							},
 							_ => continue,
 						};
 						if term_tx.blocking_send(app_event).is_err() {
@@ -882,6 +891,10 @@ pub async fn run_interactive(
 							// Always accept paste so the user can type ahead while streaming.
 							let bracketed = format!("\x1b[200~{text}\x1b[201~");
 							app.handle_input(&bracketed);
+						},
+						rho_tui::TerminalEvent::MouseScroll(direction) => {
+							// 3 lines per scroll notch — matches typical terminal defaults.
+							app.chat.scroll_lines(i32::from(*direction) * 3);
 						},
 					}
 				},

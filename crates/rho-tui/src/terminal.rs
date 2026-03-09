@@ -34,8 +34,9 @@ pub fn emergency_terminal_restore() {
 	// Best-effort: ignore errors since terminal may be dead
 	let _ = execute!(
 		stdout,
-		Print("\x1b[?2004l"), // Disable bracketed paste
-		Print("\x1b[<u"),     // Pop kitty keyboard protocol
+		event::DisableMouseCapture, // Disable mouse capture
+		Print("\x1b[?2004l"),       // Disable bracketed paste
+		Print("\x1b[<u"),           // Pop kitty keyboard protocol
 		cursor::Show,
 	);
 	let _ = terminal::disable_raw_mode();
@@ -103,6 +104,8 @@ pub enum TerminalEvent {
 	Paste(String),
 	/// Terminal was resized.
 	Resize(u16, u16),
+	/// Mouse scroll wheel event. Positive = scroll up, negative = scroll down.
+	MouseScroll(i8),
 }
 
 // ============================================================================
@@ -213,6 +216,9 @@ impl Terminal for CrosstermTerminal {
 		// Enable bracketed paste
 		self.safe_write("\x1b[?2004h")?;
 
+		// Enable mouse capture (for scroll wheel support).
+		execute!(io::stdout(), event::EnableMouseCapture)?;
+
 		// Query and enable Kitty protocol
 		self.query_kitty_protocol()?;
 
@@ -220,6 +226,9 @@ impl Terminal for CrosstermTerminal {
 	}
 
 	fn stop(&mut self) -> io::Result<()> {
+		// Disable mouse capture.
+		let _ = execute!(io::stdout(), event::DisableMouseCapture);
+
 		// Disable bracketed paste
 		self.safe_write("\x1b[?2004l")?;
 
