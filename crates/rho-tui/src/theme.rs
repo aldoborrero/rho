@@ -4,7 +4,7 @@
 //! pre-computed ANSI escape sequences, and styling methods wrap text
 //! with appropriate escape codes.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, rc::Rc};
 
 use crate::{
 	components::{
@@ -246,32 +246,21 @@ impl Theme {
 
 	/// Build a `MarkdownTheme` using this theme's colors.
 	pub fn markdown_theme(&self, symbols: SymbolTheme) -> MarkdownTheme {
-		let heading = self.fg_closure(ThemeColor::MdHeading);
-		let link = self.fg_closure(ThemeColor::MdLink);
-		let link_url = self.fg_closure(ThemeColor::MdLinkUrl);
-		let code = self.fg_closure(ThemeColor::MdCode);
-		let code_block = self.fg_closure(ThemeColor::MdCodeBlock);
-		let code_block_border = self.fg_closure(ThemeColor::MdCodeBlockBorder);
-		let quote = self.fg_closure(ThemeColor::MdQuote);
-		let quote_border = self.fg_closure(ThemeColor::MdQuoteBorder);
-		let hr = self.fg_closure(ThemeColor::MdHr);
-		let list_bullet = self.fg_closure(ThemeColor::MdListBullet);
-
 		MarkdownTheme {
-			heading,
-			link,
-			link_url,
-			code,
-			code_block,
-			code_block_border,
-			quote,
-			quote_border,
-			hr,
-			list_bullet,
-			bold: Box::new(|s| format!("\x1b[1m{s}\x1b[22m")),
-			italic: Box::new(|s| format!("\x1b[3m{s}\x1b[23m")),
-			strikethrough: Box::new(|s| format!("\x1b[9m{s}\x1b[29m")),
-			underline: Box::new(|s| format!("\x1b[4m{s}\x1b[24m")),
+			heading: Rc::from(self.fg_closure(ThemeColor::MdHeading)),
+			link: Rc::from(self.fg_closure(ThemeColor::MdLink)),
+			link_url: Rc::from(self.fg_closure(ThemeColor::MdLinkUrl)),
+			code: Rc::from(self.fg_closure(ThemeColor::MdCode)),
+			code_block: Rc::from(self.fg_closure(ThemeColor::MdCodeBlock)),
+			code_block_border: Rc::from(self.fg_closure(ThemeColor::MdCodeBlockBorder)),
+			quote: Rc::from(self.fg_closure(ThemeColor::MdQuote)),
+			quote_border: Rc::from(self.fg_closure(ThemeColor::MdQuoteBorder)),
+			hr: Rc::from(self.fg_closure(ThemeColor::MdHr)),
+			list_bullet: Rc::from(self.fg_closure(ThemeColor::MdListBullet)),
+			bold: Rc::new(|s: &str| format!("\x1b[1m{s}\x1b[22m")),
+			italic: Rc::new(|s: &str| format!("\x1b[3m{s}\x1b[23m")),
+			strikethrough: Rc::new(|s: &str| format!("\x1b[9m{s}\x1b[29m")),
+			underline: Rc::new(|s: &str| format!("\x1b[4m{s}\x1b[24m")),
 			highlight_code: None,
 			get_mermaid_image: None,
 			symbols,

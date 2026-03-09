@@ -332,7 +332,7 @@ impl Tui {
 	/// Overlays are still composited by Tui.
 	pub fn render_lines(
 		&mut self,
-		content_lines: &[String],
+		content_lines: Vec<String>,
 		terminal: &mut dyn Terminal,
 	) -> std::io::Result<()> {
 		if !self.render_needed || self.stopped {
@@ -342,9 +342,8 @@ impl Tui {
 
 		let width = terminal.columns();
 		let height = terminal.rows();
-		let new_lines = content_lines.to_vec();
 
-		self.do_render_with_lines(new_lines, width, height, terminal)
+		self.do_render_with_lines(content_lines, width, height, terminal)
 	}
 
 	/// Run input listeners on raw input data.

@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use criterion::{Criterion, criterion_group, criterion_main};
 use rho_tui::{
 	BoxSymbols, Component, RoundedBoxSymbols, SymbolTheme,
@@ -8,20 +10,20 @@ use rho_tui::{
 /// ANSI formatting.
 fn noop_theme() -> MarkdownTheme {
 	MarkdownTheme {
-		heading:           Box::new(|s| s.to_owned()),
-		link:              Box::new(|s| s.to_owned()),
-		link_url:          Box::new(|s| s.to_owned()),
-		code:              Box::new(|s| s.to_owned()),
-		code_block:        Box::new(|s| s.to_owned()),
-		code_block_border: Box::new(|s| s.to_owned()),
-		quote:             Box::new(|s| s.to_owned()),
-		quote_border:      Box::new(|s| s.to_owned()),
-		hr:                Box::new(|s| s.to_owned()),
-		list_bullet:       Box::new(|s| s.to_owned()),
-		bold:              Box::new(|s| s.to_owned()),
-		italic:            Box::new(|s| s.to_owned()),
-		strikethrough:     Box::new(|s| s.to_owned()),
-		underline:         Box::new(|s| s.to_owned()),
+		heading:           Rc::new(|s: &str| s.to_owned()),
+		link:              Rc::new(|s: &str| s.to_owned()),
+		link_url:          Rc::new(|s: &str| s.to_owned()),
+		code:              Rc::new(|s: &str| s.to_owned()),
+		code_block:        Rc::new(|s: &str| s.to_owned()),
+		code_block_border: Rc::new(|s: &str| s.to_owned()),
+		quote:             Rc::new(|s: &str| s.to_owned()),
+		quote_border:      Rc::new(|s: &str| s.to_owned()),
+		hr:                Rc::new(|s: &str| s.to_owned()),
+		list_bullet:       Rc::new(|s: &str| s.to_owned()),
+		bold:              Rc::new(|s: &str| s.to_owned()),
+		italic:            Rc::new(|s: &str| s.to_owned()),
+		strikethrough:     Rc::new(|s: &str| s.to_owned()),
+		underline:         Rc::new(|s: &str| s.to_owned()),
 		highlight_code:    None,
 		get_mermaid_image: None,
 		symbols:           SymbolTheme {

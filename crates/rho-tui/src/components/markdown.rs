@@ -5,7 +5,10 @@
 //! blocks with syntax highlighting, horizontal rules, inline styles, links, and
 //! mermaid/image rendering.
 
-use std::cmp::{max, min};
+use std::{
+	cmp::{max, min},
+	rc::Rc,
+};
 
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use rho_text::width::visible_width_str;
@@ -23,15 +26,16 @@ use crate::{
 // ============================================================================
 
 /// Style function: takes text, returns styled text with ANSI codes.
-pub type StyleFn = Box<dyn Fn(&str) -> String>;
+pub type StyleFn = Rc<dyn Fn(&str) -> String>;
 
 /// Syntax highlighting function: (code, lang) -> highlighted lines.
-pub type HighlightCodeFn = Option<Box<dyn Fn(&str, Option<&str>) -> Vec<String>>>;
+pub type HighlightCodeFn = Option<Rc<dyn Fn(&str, Option<&str>) -> Vec<String>>>;
 
 /// Mermaid image lookup function: source hash -> optional image data.
-pub type GetMermaidImageFn = Option<Box<dyn Fn(&str) -> Option<MermaidImage>>>;
+pub type GetMermaidImageFn = Option<Rc<dyn Fn(&str) -> Option<MermaidImage>>>;
 
 /// Default text styling applied to all markdown content unless overridden.
+#[derive(Clone)]
 pub struct DefaultTextStyle {
 	/// Foreground color function.
 	pub color:         Option<StyleFn>,
@@ -55,6 +59,7 @@ pub struct MermaidImage {
 }
 
 /// Theme functions for styling markdown elements.
+#[derive(Clone)]
 pub struct MarkdownTheme {
 	pub heading:           StyleFn,
 	pub link:              StyleFn,
@@ -241,7 +246,7 @@ impl Markdown {
 			if let Some(ref style) = self.default_text_style
 				&& let Some(ref bg_fn) = style.bg_color
 			{
-				content_lines.push(apply_background_to_line(&with_margins, w, bg_fn));
+				content_lines.push(apply_background_to_line(&with_margins, w, &**bg_fn));
 			} else {
 				let vis_len = visible_width_str(&with_margins);
 				let padding_needed = w.saturating_sub(vis_len);
@@ -256,7 +261,7 @@ impl Markdown {
 			if let Some(ref style) = self.default_text_style
 				&& let Some(ref bg_fn) = style.bg_color
 			{
-				result.push(apply_background_to_line(&empty_line, w, bg_fn));
+				result.push(apply_background_to_line(&empty_line, w, &**bg_fn));
 			} else {
 				result.push(empty_line.clone());
 			}
@@ -266,7 +271,7 @@ impl Markdown {
 			if let Some(ref style) = self.default_text_style
 				&& let Some(ref bg_fn) = style.bg_color
 			{
-				result.push(apply_background_to_line(&empty_line, w, bg_fn));
+				result.push(apply_background_to_line(&empty_line, w, &**bg_fn));
 			} else {
 				result.push(empty_line.clone());
 			}
@@ -1036,7 +1041,7 @@ impl Markdown {
 		));
 
 		// Header rows (wrapped)
-		render_table_row(&header_cells, &column_widths, v, true, &self.theme.bold, lines);
+		render_table_row(&header_cells, &column_widths, v, true, &*self.theme.bold, lines);
 
 		// Separator
 		let sep_cells: Vec<String> = column_widths.iter().map(|w| h.repeat(*w)).collect();
@@ -1050,7 +1055,7 @@ impl Markdown {
 
 		// Data rows
 		for (row_idx, row) in rows.iter().enumerate() {
-			render_table_row(row, &column_widths, v, false, &self.theme.bold, lines);
+			render_table_row(row, &column_widths, v, false, &*self.theme.bold, lines);
 			if row_idx < rows.len() - 1 {
 				lines.push(separator.clone());
 			}
@@ -1453,20 +1458,20 @@ fn render_table_row(
 #[cfg(test)]
 fn plain_theme_for_rerender() -> MarkdownTheme {
 	MarkdownTheme {
-		heading:           Box::new(|s| s.to_owned()),
-		link:              Box::new(|s| s.to_owned()),
-		link_url:          Box::new(|s| s.to_owned()),
-		code:              Box::new(|s| s.to_owned()),
-		code_block:        Box::new(|s| s.to_owned()),
-		code_block_border: Box::new(|s| s.to_owned()),
-		quote:             Box::new(|s| s.to_owned()),
-		quote_border:      Box::new(|s| s.to_owned()),
-		hr:                Box::new(|s| s.to_owned()),
-		list_bullet:       Box::new(|s| s.to_owned()),
-		bold:              Box::new(|s| s.to_owned()),
-		italic:            Box::new(|s| s.to_owned()),
-		strikethrough:     Box::new(|s| s.to_owned()),
-		underline:         Box::new(|s| s.to_owned()),
+		heading:           Rc::new(|s: &str| s.to_owned()),
+		link:              Rc::new(|s: &str| s.to_owned()),
+		link_url:          Rc::new(|s: &str| s.to_owned()),
+		code:              Rc::new(|s: &str| s.to_owned()),
+		code_block:        Rc::new(|s: &str| s.to_owned()),
+		code_block_border: Rc::new(|s: &str| s.to_owned()),
+		quote:             Rc::new(|s: &str| s.to_owned()),
+		quote_border:      Rc::new(|s: &str| s.to_owned()),
+		hr:                Rc::new(|s: &str| s.to_owned()),
+		list_bullet:       Rc::new(|s: &str| s.to_owned()),
+		bold:              Rc::new(|s: &str| s.to_owned()),
+		italic:            Rc::new(|s: &str| s.to_owned()),
+		strikethrough:     Rc::new(|s: &str| s.to_owned()),
+		underline:         Rc::new(|s: &str| s.to_owned()),
 		highlight_code:    None,
 		get_mermaid_image: None,
 		symbols:           default_symbols(),
